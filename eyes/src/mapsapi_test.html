@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Satellite Map</title>
+    <style>
+      #map {
+        height: 400px;
+        width: 100%;
+      }
+    </style>
+
+    <script
+      src="https://maps.googleapis.com/maps/api/js?key=apikey"
+      defer
+    ></script>
+
+    <script>
+      function initMap() {
+        const center = { lat: 15.4878, lng: 44.2261 };
+
+        const map = new google.maps.Map(document.getElementById("map"), {
+          zoom: 22,
+          center,
+          mapTypeId: "satellite",
+          tilt: 0,
+          maxZoom: 21,
+          minZoom: 15,
+        });
+      }
+
+      window.initMap = initMap;
+    </script>
+  </head>
+
+  <body onload="initMap()">
+    <div id="map"></div>
+  </body>
+</html>

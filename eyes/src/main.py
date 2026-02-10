@@ -34,7 +34,12 @@
 # each major step should be broken out into its own function. inference will be the most heavy/important function, taking in a processed image from a stream, a sattelie image of the drop zone (which is procured via, as stated, its own function, ideally at initiatalization, and outputting a tuple of a GO/NO_GO with a confidence metric. threshold - 90%.)
 # as a note - a go result does not neccessarily mean drop. it means eyes has triggered - the drone is over the target. assuming a high speed, this would mean a payload miss. the go signal should not be interpreted as a release payload sign. might have to reword later.
 # the program is executed via a main/overall function that just calls all intermediary functions, and will be run in the typical if __name__ == __main__ setup.
-#
+
+
+# research cont.
+# to make specs more accurate, lets identify a specific test subject. kamikaze drones, pre lock on
+# kamikaze drones can accurately identify targets from 200-800ft in the air. it is unreasonable to assume accurate publicly valiable imagery at this specific of a scale. thus, for a test case, we will assume eyes takes on the role of a general locator
+# the eyes system identifies when the ideal hyperspecific region to target is reached. assume drone is at an alt of 2500m; eyes can identify when the payload is in the target 100m x 100m region.
 
 """
 Eyes - Autonomous Drone Payload Deployment System
