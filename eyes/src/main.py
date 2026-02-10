@@ -6,7 +6,7 @@
 
 # so, pipeline must be entirely contained within some decently timed loop - consider how fast the drone is moving.
 # assuming the drone is up (100 feet seems reasonable)), and moving rather fast (20-40m/s), 
-# should probably be near 30fps,
+# should probably be near 30fps.
 
 # within the 0.03 that allots per cycle, we should be able to:
 # capture a frame from the camera
@@ -32,6 +32,7 @@
 # opencv (or nothing, if reasonable) for inference - again, inference must be explainable and accurate. ai models might not be the correct solution here. consider more established mathematical approaches to comparing image similarity
 
 # each major step should be broken out into its own function. inference will be the most heavy/important function, taking in a processed image from a stream, a sattelie image of the drop zone (which is procured via, as stated, its own function, ideally at initiatalization, and outputting a tuple of a GO/NO_GO with a confidence metric. threshold - 90%.)
+# as a note - a go result does not neccessarily mean drop. it means eyes has triggered - the drone is over the target. assuming a high speed, this would mean a payload miss. the go signal should not be interpreted as a release payload sign. might have to reword later.
 # the program is executed via a main/overall function that just calls all intermediary functions, and will be run in the typical if __name__ == __main__ setup.
 #
 
