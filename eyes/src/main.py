@@ -357,7 +357,7 @@ class Eyes:
             decision, confidence = self.compute_similarity(processed, self.reference_image)
             
             # Updated logging
-            if frame_count % 20 == 0:
+            if frame_count % 20 == 0 and decision != "GO":
                 print(f"[EYES] Time: {current_timestamp:.2f}s: {decision} (confidence: {confidence:.2%})")
             
 
