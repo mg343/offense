@@ -42,19 +42,15 @@
 # the eyes system identifies when the ideal hyperspecific region to target is reached. assume drone is at an alt of 2500m; eyes can identify when the payload is in the target 100m x 100m region. maps does not have an easy conversion/tile sizing via zoom, rough estimate for the 100m x 100m range is a zoom of 20. is roughly 2365m above ground level.
 
 
-"""
-Eyes - Autonomous Drone Payload Deployment System
-Post-mission localization via visual similarity matching
-"""
-
+import os
 import cv2
 import numpy as np
-from typing import Tuple
+from typing import Tuple, List
 import requests
 from io import BytesIO
 from PIL import Image
 import time
-import os
+import gdown
 
 
 class Eyes:
@@ -97,8 +93,12 @@ class Eyes:
         self.processing_width = processing_width
         self.processing_height = processing_height
         
-        # Load reference satellite imagery at initialization
+        # Create output directory structure
+        self.output_dir = self._create_output_directory()
+        
+        # Load reference satellite imagery at initialization and save it
         self.reference_image = self._load_satellite_reference()
+        self._save_target_image()
         
         # Feature detector for robust matching
         self.feature_detector = cv2.SIFT_create()
@@ -110,6 +110,57 @@ class Eyes:
         print(f"[EYES] Zoom level: {zoom_level}")
         print(f"[EYES] Processing dimensions: {self.processing_width}x{self.processing_height}")
         print(f"[EYES] Deployment threshold: {deployment_confidence_threshold * 100}%")
+        print(f"[EYES] Output directory: {self.output_dir}")
+    
+    
+    def _create_output_directory(self) -> str:
+        """
+        Create output directory structure for saving detection images.
+        
+        Returns:
+            str: Path to the output directory
+        """
+        # Create base output directory
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        base_output_dir = os.path.join(script_dir, "files", "output")
+        os.makedirs(base_output_dir, exist_ok=True)
+        
+        # Create target-specific directory
+        target_coords = f"target_{self.target_lat:.4f}_{self.target_lon:.4f}"
+        target_dir = os.path.join(base_output_dir, target_coords)
+        os.makedirs(target_dir, exist_ok=True)
+        
+        # Create detections subdirectory
+        detections_dir = os.path.join(target_dir, "detections")
+        os.makedirs(detections_dir, exist_ok=True)
+        
+        return target_dir
+    
+    
+    def _save_target_image(self):
+        """
+        Save the target satellite image to the output directory.
+        """
+        if self.reference_image is not None and len(self.reference_image) > 0:
+            target_image_path = os.path.join(self.output_dir, "target_image.jpg")
+            cv2.imwrite(target_image_path, self.reference_image)
+            print(f"[EYES] Saved target image to: {target_image_path}")
+    
+    
+    def _save_detection_image(self, frame: np.ndarray, confidence: float, timestamp: float):
+        """
+        Save a detection image to the output directory.
+        
+        Args:
+            frame: The frame where detection occurred
+            confidence: Confidence score of the detection
+            timestamp: Timestamp of the detection
+        """
+        if frame is not None and len(frame) > 0:
+            # Create filename with timestamp and confidence
+            filename = f"detection_{timestamp:.2f}s_{confidence:.2%}.jpg".replace('%', 'pct')
+            detection_path = os.path.join(self.output_dir, "detections", filename)
+            cv2.imwrite(detection_path, frame)
     
     
     def _load_satellite_reference(self) -> np.ndarray:
@@ -286,12 +337,10 @@ class Eyes:
             }
         
         print(f"[EYES] Processing stream: {video_path}")
+        print("\n")
         
         frame_count = 0
-        deployed = False
-        deployment_frame = None
-        deployment_confidence = 0.0
-        deployment_timestamp = None
+        detections: List[dict] = []
         
         while cap.isOpened():
             ret, frame = cap.read()
@@ -300,31 +349,33 @@ class Eyes:
                 break
             
             frame_count += 1
-            current_timestamp = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0  # Convert ms to seconds
+            current_timestamp = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
             start_time = time.time()
             
             # Preprocess and compare
             processed = self.preprocess_frame(frame)
             decision, confidence = self.compute_similarity(processed, self.reference_image)
             
-            # Updated logging: Print time elapsed (s) instead of frame count
-            if frame_count % 10 == 0:
+            # Updated logging
+            if frame_count % 20 == 0:
                 print(f"[EYES] Time: {current_timestamp:.2f}s: {decision} (confidence: {confidence:.2%})")
             
+
             # Check for target detection
-            if decision == "GO" and not deployed:
-                deployed = True
-                deployment_frame = frame_count
-                deployment_confidence = confidence
-                # Using the timestamp calculated from the video properties
-                deployment_timestamp = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+            if decision == "GO":
+
+                print(f"[EYES] !!! TARGET DETECTED -- Time: {current_timestamp:.2f}s: {decision} (confidence: {confidence:.2%})")
+
+                detection_info = {
+                    "frame_number": frame_count,
+                    "timestamp_s": current_timestamp,
+                    "confidence": confidence,
+                    "frame": frame.copy()  # Save copy for later saving
+                }
+                detections.append(detection_info)
                 
-                print(f"\n{'='*60}")
-                print(f"[EYES] 🎯 TARGET DETECTED")
-                print(f"[EYES] Time Elapsed: {deployment_timestamp:.2f}s")  # Updated line
-                print(f"[EYES] Confidence: {deployment_confidence:.2%}")
-                print(f"{'='*60}\n")
-                break
+                # Save detection image
+                self._save_detection_image(frame, confidence, current_timestamp)
             
             # Frame rate timing
             elapsed = time.time() - start_time
@@ -334,20 +385,14 @@ class Eyes:
         
         # Results
         results = {
-            "status": "SUCCESS" if deployed else "NO_DEPLOYMENT",
-            "deployed": deployed,
+            "status": "SUCCESS" if detections else "NO_DEPLOYMENT",
+            "total_detections": len(detections),
             "total_frames_processed": frame_count,
             "target_coordinates": (self.target_lat, self.target_lon),
             "zoom_level": self.zoom_level,
-            "processing_dimensions": f"{self.processing_width}x{self.processing_height}"
+            "processing_dimensions": f"{self.processing_width}x{self.processing_height}",
+            "output_directory": self.output_dir
         }
-        
-        if deployed:
-            results.update({
-                "deployment_frame": deployment_frame,
-                "deployment_timestamp_s": deployment_timestamp,
-                "deployment_confidence": deployment_confidence
-            })
         
         return results
 
@@ -364,13 +409,31 @@ def main():
     TARGET_LAT = 15.4878
     TARGET_LON = 44.2261
     ZOOM_LEVEL = 20
-    GOOGLE_MAPS_API_KEY = "YOUR_API_KEY_HERE"
     CONFIDENCE_THRESHOLD = 0.60
-    
+    GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY")
+    if not GOOGLE_MAPS_API_KEY:
+        print("ERROR: Set GOOGLE_MAPS_API_KEY environment variable")
+        print("Example: export GOOGLE_MAPS_API_KEY='your_key_here'")
+        exit(1)
+
+    # Google Drive direct download URL
+    DRIVE_URL = "https://drive.google.com/uc?id=1v1YRa2eBcGP6yZ9gQY0L6MitQXFK8MRy"
+
     # Get script directory and construct video path
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    VIDEO_STREAM = os.path.join(script_dir, "files", "stream.mp4")
-    
+    files_dir = os.path.join(script_dir, "files")
+    VIDEO_STREAM = os.path.join(files_dir, "stream.mp4")
+
+    # Ensure directory exists
+    os.makedirs(files_dir, exist_ok=True)
+
+    # If video does not exist, download it
+    if not os.path.exists(VIDEO_STREAM):
+        print("[EYES] Demo video stream does not exist")
+        gdown.download(DRIVE_URL, VIDEO_STREAM, quiet=False)
+    else:
+        print("[EYES] Demo video exists at /files/stream.mp4")
+
     # Initialize and run
     eyes = Eyes(
         target_lat=TARGET_LAT,
@@ -379,13 +442,14 @@ def main():
         google_maps_api_key=GOOGLE_MAPS_API_KEY,
         deployment_confidence_threshold=CONFIDENCE_THRESHOLD,
         frame_rate=30,
-        processing_width=640,  # Can be changed if needed
-        processing_height=640   # Can be changed if needed
+        processing_width=640,
+        processing_height=640
     )
     
     results = eyes.process_stream(VIDEO_STREAM)
     
     # Display results
+    print("\n")
     print("\n" + "="*60)
     print("MISSION RESULTS")
     print("="*60)
