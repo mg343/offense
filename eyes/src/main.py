@@ -39,7 +39,7 @@
 # research cont.
 # to make specs more accurate, lets identify a specific test subject. kamikaze drones, pre lock on
 # kamikaze drones can accurately identify targets from 200-800ft in the air. it is unreasonable to assume accurate publicly valiable imagery at this specific of a scale. thus, for a test case, we will assume eyes takes on the role of a general locator
-# the eyes system identifies when the ideal hyperspecific region to target is reached. assume drone is at an alt of 2500m; eyes can identify when the payload is in the target 100m x 100m region.
+# the eyes system identifies when the ideal hyperspecific region to target is reached. assume drone is at an alt of 2500m; eyes can identify when the payload is in the target 100m x 100m region. maps does not have an easy conversion/tile sizing via zoom, rough estimate for the 100m x 100m range is a zoom of 20. is roughly 2365m above ground level.
 
 """
 Eyes - Autonomous Drone Payload Deployment System

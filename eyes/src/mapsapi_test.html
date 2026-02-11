@@ -1,38 +1,28 @@
 <!DOCTYPE html>
 <html>
   <head>
-    <title>Satellite Map</title>
+    <title>Satellite Map - Yemen Airbase</title>
     <style>
+      body {
+        margin: 0;
+        padding: 20px;
+        font-family: Arial, sans-serif;
+      }
       #map {
-        height: 400px;
         width: 100%;
+        max-width: 800px;
+        height: auto;
       }
     </style>
-
-    <script
-      src="https://maps.googleapis.com/maps/api/js?key=apikey"
-      defer
-    ></script>
-
-    <script>
-      function initMap() {
-        const center = { lat: 15.4878, lng: 44.2261 };
-
-        const map = new google.maps.Map(document.getElementById("map"), {
-          zoom: 22,
-          center,
-          mapTypeId: "satellite",
-          tilt: 0,
-          maxZoom: 21,
-          minZoom: 15,
-        });
-      }
-
-      window.initMap = initMap;
-    </script>
   </head>
 
-  <body onload="initMap()">
-    <div id="map"></div>
+  <body>
+    <h1>Yemen Airbase - Satellite View</h1>
+    <img 
+      id="map" 
+      src="https://maps.googleapis.com/maps/api/staticmap?center=15.4878,44.2261&zoom=20&size=800x600&maptype=satellite&key=apikey"
+      alt="Satellite view of Yemen Airbase"
+    />
+
   </body>
 </html>
