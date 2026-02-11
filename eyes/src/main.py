@@ -372,3 +372,19 @@ def main():
         deployment_confidence_threshold=CONFIDENCE_THRESHOLD,
         frame_rate=30
     )
+    
+    results = eyes.process_stream()
+    
+    # Display results
+    print("\n" + "="*60)
+    print("MISSION RESULTS")
+    print("="*60)
+    for key, value in results.items():
+        print(f"{key}: {value}")
+    print("="*60 + "\n")
+    
+    return results
+
+
+if __name__ == "__main__":
+    main()
