@@ -256,26 +256,28 @@ class Eyes:
                 break
             
             frame_count += 1
+            current_timestamp = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0  # Convert ms to seconds
             start_time = time.time()
             
             # Preprocess and compare
             processed = self.preprocess_frame(frame)
             decision, confidence = self.compute_similarity(processed, self.reference_image)
             
+            # Updated logging: Print time elapsed (s) instead of frame count
             if frame_count % 10 == 0:
-                print(f"[EYES] Frame {frame_count}: {decision} (confidence: {confidence:.2%})")
+                print(f"[EYES] Time: {current_timestamp:.2f}s: {decision} (confidence: {confidence:.2%})")
             
             # Check for target detection
             if decision == "GO" and not deployed:
                 deployed = True
                 deployment_frame = frame_count
                 deployment_confidence = confidence
+                # Using the timestamp calculated from the video properties
                 deployment_timestamp = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
                 
                 print(f"\n{'='*60}")
                 print(f"[EYES] 🎯 TARGET DETECTED")
-                print(f"[EYES] Frame: {deployment_frame}")
-                print(f"[EYES] Timestamp: {deployment_timestamp:.2f}s")
+                print(f"[EYES] Time Elapsed: {deployment_timestamp:.2f}s")  # Updated line
                 print(f"[EYES] Confidence: {deployment_confidence:.2%}")
                 print(f"{'='*60}\n")
                 break
@@ -319,7 +321,7 @@ def main():
     TARGET_LON = 44.2261
     ZOOM_LEVEL = 20
     GOOGLE_MAPS_API_KEY = "YOUR_API_KEY_HERE"
-    CONFIDENCE_THRESHOLD = 0.70
+    CONFIDENCE_THRESHOLD = 0.60
     
     # Get script directory and construct video path
     script_dir = os.path.dirname(os.path.abspath(__file__))
