@@ -1,4 +1,4 @@
-# eyes brain dump.
+# glasses brain dump.
 
 # can only be a sim for now, no livestream
 # if full though, the functionality would involve one continous eval pipeline
@@ -32,14 +32,14 @@
 # opencv (or nothing, if reasonable) for inference - again, inference must be explainable and accurate. ai models might not be the correct solution here. consider more established mathematical approaches to comparing image similarity
 
 # each major step should be broken out into its own function. inference will be the most heavy/important function, taking in a processed image from a stream, a sattelie image of the drop zone (which is procured via, as stated, its own function, ideally at initiatalization, and outputting a tuple of a GO/NO_GO with a confidence metric. threshold - 90%.)
-# as a note - a go result does not neccessarily mean drop. it means eyes has triggered - the drone is over the target. assuming a high speed, this would mean a payload miss. the go signal should not be interpreted as a release payload sign. might have to reword later.
+# as a note - a go result does not neccessarily mean drop. it means glasses has triggered - the drone is over the target. assuming a high speed, this would mean a payload miss. the go signal should not be interpreted as a release payload sign. might have to reword later.
 # the program is executed via a main/overall function that just calls all intermediary functions, and will be run in the typical if __name__ == __main__ setup.
 
 
 # research cont.
 # to make specs more accurate, lets identify a specific test subject. kamikaze drones, pre lock on
-# kamikaze drones can accurately identify targets from 200-800ft in the air. it is unreasonable to assume accurate publicly valiable imagery at this specific of a scale. thus, for a test case, we will assume eyes takes on the role of a general locator
-# the eyes system identifies when the ideal hyperspecific region to target is reached. assume drone is at an alt of 2500m; eyes can identify when the payload is in the target 100m x 100m region. maps does not have an easy conversion/tile sizing via zoom, rough estimate for the 100m x 100m range is a zoom of 20. is roughly 2365m above ground level.
+# kamikaze drones can accurately identify targets from 200-800ft in the air. it is unreasonable to assume accurate publicly valiable imagery at this specific of a scale. thus, for a test case, we will assume glasses takes on the role of a general locator
+# the glasses system identifies when the ideal hyperspecific region to target is reached. assume drone is at an alt of 2500m; glasses can identify when the payload is in the target 100m x 100m region. maps does not have an easy conversion/tile sizing via zoom, rough estimate for the 100m x 100m range is a zoom of 20. is roughly 2365m above ground level.
 
 
 import os
@@ -53,9 +53,9 @@ import time
 import gdown
 
 
-class Eyes:
+class Glasses:
     """
-    Main controller for Eyes payload deployment verification system.
+    Main controller for Glasses payload deployment verification system.
     """
     
     def __init__(
@@ -70,7 +70,7 @@ class Eyes:
         processing_height: int = 640
     ):
         """
-        Initialize Eyes system.
+        Initialize Glasses system.
         
         Args:
             target_lat: Target latitude coordinates
@@ -399,7 +399,7 @@ class Eyes:
 
 def main():
     """
-    Main execution function for Eyes system.
+    Main execution function for Glasses system.
     """
     print("\n" + "="*60)
     print("EYES - Autonomous Payload Deployment System")
@@ -435,7 +435,7 @@ def main():
         print("[EYES] Demo video exists at /files/stream.mp4")
 
     # Initialize and run
-    eyes = Eyes(
+    glasses = Glasses(
         target_lat=TARGET_LAT,
         target_lon=TARGET_LON,
         zoom_level=ZOOM_LEVEL,
@@ -446,7 +446,7 @@ def main():
         processing_height=640
     )
     
-    results = eyes.process_stream(VIDEO_STREAM)
+    results = glasses.process_stream(VIDEO_STREAM)
     
     # Display results
     print("\n")
