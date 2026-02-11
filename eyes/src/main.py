@@ -1,46 +1,3 @@
-# eyes brain dump.
-
-# can only be a sim for now, no livestream
-# if full though, the functionality would involve one continous eval pipeline
-# keeping many images loaded would be highly inefficient
-
-# so, pipeline must be entirely contained within some decently timed loop - consider how fast the drone is moving.
-# assuming the drone is up (100 feet seems reasonable)), and moving rather fast (20-40m/s), 
-# should probably be near 30fps.
-
-# within the 0.03 that allots per cycle, we should be able to:
-# capture a frame from the camera
-# pre-process it to make comparison accurate
-# perform inference (compare input to sattelite imagery over target coords - have this loaded up for ease of comparison)
-#     inference must be robust, big stakes, needs to be an effective strategy for inference
-# make a decision via inference results
-# drop frame
-# restart loop
-
-# we should keep the model as close to real world.
-# thus, the input are limited to:
-# 1. video stream (/files/stream.mp4 represents drone camera stream - this is suitable; most camera processing is straight math, which is near instantaneous calculations, so we can use this comfortably knowing that the amount of processing that would be associated with raw data would add negligible time),
-# 2. coordinates of drop zone
-#     2a. a straight image of the drop zone (technically easier, but tackiling the technically complex problem first)
-#     2-note. some might argue that this assumes that drones will fly at the same altitude, which is unreasonable. however, pre-programmed/autonomous drones typically have a specified altitude at which they approach the target/reach target at.
-#     for 2a., this need not be specified, dummy information can be given to the variable can be used. for 2.0, we will use a pre-programmed altitude variable, which is provided in addition to the coords to information to idneitfy the proper scale sattelite image to be retrieved, and apply saling if the altitude insists a "not clean" zoom.
-#     all this to say - altitude changes are not very pertinent here, but we will build in the functionality for purposes of technical demonstration.
-
-# libraries to be used (minimal, but for PoC don't have to go crazy. consider also, all hosted on machine, so data transmitting is not an issue)
-# opencv for image processing
-# openstreetmap, or any other open mapping software with a usable api for retrieving sattelite imagery
-# opencv (or nothing, if reasonable) for inference - again, inference must be explainable and accurate. ai models might not be the correct solution here. consider more established mathematical approaches to comparing image similarity
-
-# each major step should be broken out into its own function. inference will be the most heavy/important function, taking in a processed image from a stream, a sattelie image of the drop zone (which is procured via, as stated, its own function, ideally at initiatalization, and outputting a tuple of a GO/NO_GO with a confidence metric. threshold - 90%.)
-# as a note - a go result does not neccessarily mean drop. it means eyes has triggered - the drone is over the target. assuming a high speed, this would mean a payload miss. the go signal should not be interpreted as a release payload sign. might have to reword later.
-# the program is executed via a main/overall function that just calls all intermediary functions, and will be run in the typical if __name__ == __main__ setup.
-
-
-# research cont.
-# to make specs more accurate, lets identify a specific test subject. kamikaze drones, pre lock on
-# kamikaze drones can accurately identify targets from 200-800ft in the air. it is unreasonable to assume accurate publicly valiable imagery at this specific of a scale. thus, for a test case, we will assume eyes takes on the role of a general locator
-# the eyes system identifies when the ideal hyperspecific region to target is reached. assume drone is at an alt of 2500m; eyes can identify when the payload is in the target 100m x 100m region. maps does not have an easy conversion/tile sizing via zoom, rough estimate for the 100m x 100m range is a zoom of 20. is roughly 2365m above ground level.
-
 """
 Eyes - Autonomous Drone Payload Deployment System
 Post-mission localization via visual similarity matching
@@ -66,7 +23,6 @@ class Eyes:
         target_lon: float,
         zoom_level: int,
         google_maps_api_key: str,
-        video_path: str,
         deployment_confidence_threshold: float = 0.90,
         frame_rate: int = 30
     ):
@@ -78,7 +34,6 @@ class Eyes:
             target_lon: Target longitude coordinates
             zoom_level: Google Maps zoom level (13-21)
             google_maps_api_key: Google Maps API key for Static API
-            video_path: Path to video file (needed to determine dimensions)
             deployment_confidence_threshold: Minimum confidence to deploy (default 0.90)
             frame_rate: Processing frame rate in fps (default 30)
         """
@@ -86,12 +41,8 @@ class Eyes:
         self.target_lon = target_lon
         self.zoom_level = zoom_level
         self.api_key = google_maps_api_key
-        self.video_path = video_path
         self.confidence_threshold = deployment_confidence_threshold
         self.frame_interval = 1.0 / frame_rate
-        
-        # Get video dimensions
-        self.video_width, self.video_height = self._get_video_dimensions()
         
         # Load reference satellite imagery at initialization
         self.reference_image = self._load_satellite_reference()
@@ -104,44 +55,22 @@ class Eyes:
         
         print(f"[EYES] Initialized with target: ({target_lat}, {target_lon})")
         print(f"[EYES] Zoom level: {zoom_level}")
-        print(f"[EYES] Video dimensions: {self.video_width}x{self.video_height}")
         print(f"[EYES] Deployment threshold: {deployment_confidence_threshold * 100}%")
-    
-    
-    def _get_video_dimensions(self) -> Tuple[int, int]:
-        """
-        Get dimensions from video stream.
-        
-        Returns:
-            Tuple[int, int]: (width, height)
-        """
-        cap = cv2.VideoCapture(self.video_path)
-        
-        if not cap.isOpened():
-            print(f"[EYES] WARNING: Could not open video to get dimensions, using default 800x600")
-            return 800, 600
-        
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        cap.release()
-        
-        return width, height
     
     
     def _load_satellite_reference(self) -> np.ndarray:
         """
         Load satellite imagery of target drop zone from Google Maps Static API.
-        Uses video stream dimensions for reference image size.
         
         Returns:
             np.ndarray: Reference satellite image
         """
-        # Google Maps Static API URL - using video dimensions
+        # Google Maps Static API URL
         url = (
             f"https://maps.googleapis.com/maps/api/staticmap?"
             f"center={self.target_lat},{self.target_lon}"
             f"&zoom={self.zoom_level}"
-            f"&size={self.video_width}x{self.video_height}"
+            f"&size=800x600"
             f"&maptype=satellite"
             f"&key={self.api_key}"
         )
@@ -163,7 +92,7 @@ class Eyes:
             
         except Exception as e:
             print(f"[EYES] ERROR: Could not load satellite imagery: {e}")
-            return np.zeros((self.video_height, self.video_width, 3), dtype=np.uint8)
+            return np.zeros((600, 800, 3), dtype=np.uint8)
     
     
     def preprocess_frame(self, frame: np.ndarray) -> np.ndarray:
@@ -265,23 +194,26 @@ class Eyes:
         return decision, confidence
     
     
-    def process_stream(self) -> dict:
+    def process_stream(self, video_path: str) -> dict:
         """
         Process video stream from drone camera.
         
+        Args:
+            video_path: Path to video file
+            
         Returns:
             dict: Mission results
         """
-        cap = cv2.VideoCapture(self.video_path)
+        cap = cv2.VideoCapture(video_path)
         
         if not cap.isOpened():
             return {
                 "status": "ERROR",
-                "message": f"Could not open video stream: {self.video_path}",
+                "message": f"Could not open video stream: {video_path}",
                 "deployed": False
             }
         
-        print(f"[EYES] Processing stream: {self.video_path}")
+        print(f"[EYES] Processing stream: {video_path}")
         
         frame_count = 0
         deployed = False
@@ -332,8 +264,7 @@ class Eyes:
             "deployed": deployed,
             "total_frames_processed": frame_count,
             "target_coordinates": (self.target_lat, self.target_lon),
-            "zoom_level": self.zoom_level,
-            "video_dimensions": f"{self.video_width}x{self.video_height}"
+            "zoom_level": self.zoom_level
         }
         
         if deployed:
@@ -368,12 +299,11 @@ def main():
         target_lon=TARGET_LON,
         zoom_level=ZOOM_LEVEL,
         google_maps_api_key=GOOGLE_MAPS_API_KEY,
-        video_path=VIDEO_STREAM,
         deployment_confidence_threshold=CONFIDENCE_THRESHOLD,
         frame_rate=30
     )
     
-    results = eyes.process_stream()
+    results = eyes.process_stream(VIDEO_STREAM)
     
     # Display results
     print("\n" + "="*60)
