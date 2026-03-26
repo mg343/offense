@@ -12,4 +12,7 @@ Ballistic Launch Solver for Targeting Earth from Moving Space Platforms.
 Vision-based helicopter precision landing system.
 
 ### [Glasses](https://github.com/mg343/offense/tree/main/glasses)
-Target Localization via Visual Environmental Prior Matching.
+Target Validation via Visual Environmental Prior Matching.
+
+### [Copper Dome](https://github.com/mg343/offense/tree/main/copperdome)
+Point‑Defense System for Intercepting "Missiles" Using "Ballistic Countermeasures".
