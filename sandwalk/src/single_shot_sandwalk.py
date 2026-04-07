@@ -209,7 +209,7 @@ def generate_tile_grid(
     altitude_m: float,
     tolerance_percent: float = 0.10,
     tile_px: int = 640,
-) -> Tuple[List[Tuple[float, float]], int, float, float, float, float, int, int, Dict]:
+) -> Tuple[List[Tuple[float, float]], int, float, float, float, float, int, int, Dict, float, float]:
     """
     Generate the minimal set of tile-centre coordinates that completely covers
     the search arc with no gaps and no redundant tiles.
@@ -226,17 +226,8 @@ def generate_tile_grid(
 
     Returns
     -------
-    candidates      : list of (lat, lon) tile centres to query (no redundancy, full coverage)
-    zoom            : Google Maps zoom level used for all tile requests
-    tile_w_m        : tile width  in metres
-    tile_h_m        : tile height in metres
-    r_min           : inner ring radius in metres
-    r_max           : outer ring radius in metres
-    n_cols          : number of columns in the full snapped grid rectangle
-    n_rows          : number of rows    in the full snapped grid rectangle
-    cell_map        : dict mapping (col, row) -> candidate_index for arc tiles;
-                      cells absent from this dict are placeholder (non-arc) positions.
-                      Row 0 is the southernmost row (lowest y); increases northward.
+    candidates, zoom, tile_w_m, tile_h_m, r_min, r_max, n_cols, n_rows, cell_map, x_min_m, y_min_m
+      x_min_m / y_min_m: snapped bbox origin (m east / m north from launch) for mosaic georeferencing.
     """
     # 1. Zoom + footprint
     zoom = altitude_to_zoom(altitude_m)
@@ -288,7 +279,7 @@ def generate_tile_grid(
           f"= {n_cols * n_rows} total cells")
     print(f"[GRID] Tiles kept (arc intersect): {len(candidates)}")
 
-    return candidates, zoom, tile_w_m, tile_h_m, r_min, r_max, n_cols, n_rows, cell_map
+    return candidates, zoom, tile_w_m, tile_h_m, r_min, r_max, n_cols, n_rows, cell_map, x_min, y_min
 
 
 # ---------------------------------------------------------------------------
@@ -342,43 +333,128 @@ def preprocess_frame(frame: np.ndarray, target_size: int = 640) -> np.ndarray:
     return sharpened
 
 
-def compute_similarity(drone_frame: np.ndarray,
-                       satellite_tile: np.ndarray) -> float:
-    """SIFT + RANSAC homography similarity score in [0, 1]."""
-    sift    = cv2.SIFT_create()
-    matcher = cv2.BFMatcher(cv2.NORM_L2, crossCheck=False)
+def mosaic_pixel_to_latlon(
+    gu: float,
+    gv: float,
+    x_min: float,
+    y_min: float,
+    n_rows: int,
+    tile_w_m: float,
+    tile_h_m: float,
+    tile_px: int,
+    launch_lat: float,
+    launch_lon: float,
+) -> Tuple[float, float]:
+    """Map pixel in north-up mosaic (origin top-left = NW of grid cell col=0 north row) to lat/lon."""
+    mpp_x = tile_w_m / tile_px
+    mpp_y = tile_h_m / tile_px
+    col   = int(math.floor(gu / tile_px))
+    irow  = int(math.floor(gv / tile_px))
+    tp = gu - col * tile_px
+    tq = gv - irow * tile_px
+    grid_row = n_rows - 1 - irow
+    cx = x_min + (col + 0.5) * tile_w_m
+    cy = y_min + (grid_row + 0.5) * tile_h_m
+    east_nw   = cx - tile_w_m / 2.0
+    north_nw  = cy + tile_h_m / 2.0
+    east      = east_nw + tp * mpp_x
+    north     = north_nw - tq * mpp_y
+    return offset_coordinates(launch_lat, launch_lon, east, north)
 
-    sat_gray = (cv2.cvtColor(satellite_tile, cv2.COLOR_BGR2GRAY)
-                if len(satellite_tile.shape) == 3 else satellite_tile)
 
-    kp1, desc1 = sift.detectAndCompute(drone_frame, None)
-    kp2, desc2 = sift.detectAndCompute(sat_gray,    None)
+def build_preprocessed_mosaic(
+    n_cols: int,
+    n_rows: int,
+    tile_px: int,
+    tiles_bgr: Dict[Tuple[int, int], np.ndarray],
+    fill: int = 127,
+) -> np.ndarray:
+    """Stack satellite tiles into one north-up grayscale mosaic (same preprocess as drone)."""
+    mosaic = np.full((n_rows * tile_px, n_cols * tile_px), fill, dtype=np.uint8)
+    for row in range(n_rows):
+        for col in range(n_cols):
+            ir = n_rows - 1 - row
+            y0, y1 = ir * tile_px, (ir + 1) * tile_px
+            x0, x1 = col * tile_px, (col + 1) * tile_px
+            tile = tiles_bgr.get((col, row))
+            if tile is not None:
+                mosaic[y0:y1, x0:x1] = preprocess_frame(tile, tile_px)
+    return mosaic
 
-    if desc1 is None or desc2 is None or len(kp1) < 10 or len(kp2) < 10:
-        return 0.0
 
-    matches = matcher.knnMatch(desc1, desc2, k=2)
-    good    = [m for m, n in matches
-               if len((m, n)) == 2 and m.distance < 0.75 * n.distance]
+def localize_template_on_mosaic(
+    mosaic: np.ndarray,
+    template: np.ndarray,
+    x_min: float,
+    y_min: float,
+    n_rows: int,
+    tile_w_m: float,
+    tile_h_m: float,
+    tile_px: int,
+    launch_lat: float,
+    launch_lon: float,
+) -> Tuple[float, float, float, Tuple[int, int], np.ndarray]:
+    """
+    cv2.matchTemplate + minMaxLoc → lat/lon at template centre (OpenCV flow:
+    https://docs.opencv.org/4.x/d4/dc6/tutorial_py_template_matching.html).
+    Returns (lat, lon, peak_score, peak_top_left, correlation_map).
+    """
+    th, tw = template.shape[:2]
+    mh, mw = mosaic.shape[:2]
+    if mh < th or mw < tw:
+        print("[MOSAIC] Template larger than mosaic; skip template match.")
+        z = np.zeros((1, 1), dtype=np.float32)
+        return launch_lat, launch_lon, 0.0, (0, 0), z
+    res = cv2.matchTemplate(mosaic, template, cv2.TM_CCOEFF_NORMED)
+    _, max_val, _, max_loc = cv2.minMaxLoc(res)
+    u, v = max_loc
+    cu = u + 0.5 * tw
+    cv = v + 0.5 * th
+    lat, lon = mosaic_pixel_to_latlon(
+        float(cu), float(cv), x_min, y_min, n_rows,
+        tile_w_m, tile_h_m, tile_px, launch_lat, launch_lon,
+    )
+    return lat, lon, float(max_val), (u, v), res
 
-    if len(good) < 10:
-        return 0.0
 
-    match_ratio = len(good) / min(len(kp1), len(kp2))
+def save_template_vs_mosaic_crop(
+    output_dir: str,
+    processed_drone: np.ndarray,
+    mosaic: np.ndarray,
+    tmpl_loc: Tuple[int, int],
+) -> None:
+    """Left = template passed to matchTemplate; right = mosaic patch at winning top-left."""
+    th, tw = processed_drone.shape[:2]
+    u, v = tmpl_loc
+    crop = mosaic[v : v + th, u : u + tw]
+    left  = cv2.cvtColor(processed_drone, cv2.COLOR_GRAY2BGR)
+    right = cv2.cvtColor(crop, cv2.COLOR_GRAY2BGR)
+    sep = np.full((th, 6, 3), 255, dtype=np.uint8)
+    combo = np.hstack([left, sep, right])
+    cv2.putText(combo, "drone template", (6, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (40, 200, 40), 1, cv2.LINE_AA)
+    cv2.putText(combo, "mosaic @ peak", (tw + 12, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (40, 200, 40), 1, cv2.LINE_AA)
+    cv2.imwrite(os.path.join(output_dir, "06_template_vs_mosaic_crop.jpg"), combo)
 
-    if len(good) >= 4:
-        src_pts = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
-        dst_pts = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
-        _, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
-        if mask is not None:
-            inlier_ratio = np.sum(mask) / len(mask)
-            confidence   = match_ratio * 0.4 + inlier_ratio * 0.6
-        else:
-            confidence = match_ratio * 0.5
-    else:
-        confidence = match_ratio * 0.5
 
-    return float(min(max(confidence, 0.0), 1.0))
+def print_visual_evaluation_guide() -> None:
+    """What each key output looks like and how to read success vs failure."""
+    print("\n" + "-" * 60)
+    print("VISUAL QA (key images)")
+    print("-" * 60)
+    print("00_drone_image.jpg — Raw input. Sanity: right scene, roughly nadir-ish satellite-like.\n"
+          "  OK: clear ground features. Bad: heavy motion blur, wrong scale vs map zoom.\n")
+    print("02b_drone_preprocessed_template.jpg — Exact grayscale template slid over the mosaic.\n"
+          "  OK: sharp edges/contrast like mosaic tiles. Bad: black/empty; very different look vs 03.\n")
+    print("03_mosaic_preprocessed.jpg — Stitched preprocessed satellite search area.\n"
+          "  OK: terrain continuous, mostly real imagery. Bad: large gray 'NO DATA' gaps in the ring.\n")
+    print("04_mosaic_template_peak.jpg — Mosaic + green box = winning 640x640 window.\n"
+          "  OK: box covers terrain that matches the template. Bad: box on gray, or wrong texture.\n")
+    print("05_match_template_heatmap.jpg — NCC surface (min-max stretched to 0-255).\n"
+          "  OK: one brightest blob (clear peak). Bad: flat gray (no winner) or several equal hotspots.\n")
+    print("06_template_vs_mosaic_crop.jpg — Template | mosaic patch at peak (quick eyeball match).\n"
+          "  OK: left and right look like the same place (feature alignment). Bad: uncorrelated patterns.\n")
+    print("Also check printed NCC peak: higher is usually more decisive (scene-dependent baseline).\n"
+          + "-" * 60)
 
 
 # ---------------------------------------------------------------------------
@@ -784,7 +860,7 @@ def main():
     cv2.imwrite(os.path.join(output_dir, "00_drone_image.jpg"), drone_frame)
 
     # ===== GENERATE SYSTEMATIC TILE GRID =====================================
-    candidates, zoom, tile_w_m, tile_h_m, r_min, r_max, n_cols, n_rows, cell_map = generate_tile_grid(
+    candidates, zoom, tile_w_m, tile_h_m, r_min, r_max, n_cols, n_rows, cell_map, x_min_m, y_min_m = generate_tile_grid(
         LAUNCH_LAT, LAUNCH_LON,
         TARGET_LAT, TARGET_LON,
         DISTANCE_TRAVELED_M,
@@ -813,14 +889,17 @@ def main():
     # ===== PREPROCESS DRONE IMAGE ============================================
     processed_drone = preprocess_frame(drone_frame, TILE_PX)
     print(f"[TEST] Preprocessed drone image: {processed_drone.shape}")
+    cv2.imwrite(
+        os.path.join(output_dir, "02b_drone_preprocessed_template.jpg"),
+        processed_drone,
+    )
 
-    # ===== MATCH AGAINST EACH TILE ===========================================
-    print(f"\n[TEST] Matching against {len(candidates)} tile(s)…\n")
+    # ===== FETCH TILES (stitch + template match only; no per-tile matching) ==
+    print(f"\n[TEST] Fetching {len(candidates)} tile(s)…\n")
 
-    best_position   = None
-    best_confidence = 0.0
-    results         = []
-    candidate_data  = []
+    idx_to_cell = {idx: (c, r) for (c, r), idx in cell_map.items()}
+    tiles_bgr: Dict[Tuple[int, int], np.ndarray] = {}
+    candidate_data: List[Dict] = []
 
     for idx, (lat, lon) in enumerate(candidates):
         print(f"[TEST] Tile {idx + 1:>3}/{len(candidates)}: "
@@ -829,21 +908,51 @@ def main():
         tile = load_satellite_tile(lat, lon, zoom, GOOGLE_MAPS_API_KEY, TILE_PX)
         if tile is None:
             print("FAILED (tile load error)")
+            candidate_data.append({"position": (lat, lon), "image": None, "confidence": 0.35})
             continue
 
         fname = f"tile_{idx + 1:03d}_lat{lat:.6f}_lon{lon:.6f}.jpg"
         cv2.imwrite(os.path.join(output_dir, fname), tile)
 
-        confidence = compute_similarity(processed_drone, tile)
-        print(f"confidence: {confidence:.2%}")
+        cell = idx_to_cell[idx]
+        tiles_bgr[cell] = tile
+        candidate_data.append({
+            "position": (lat, lon),
+            "image": tile,
+            "confidence": 0.35,
+        })
+        print("ok")
 
-        results.append({"position": (lat, lon), "confidence": confidence})
-        candidate_data.append({"position": (lat, lon), "image": tile,
-                                "confidence": confidence})
+    # ===== STITCH MOSAIC + TEMPLATE MATCH ====================================
+    print(f"\n[TEST] Building preprocessed mosaic and running template match…")
+    mosaic = build_preprocessed_mosaic(n_cols, n_rows, TILE_PX, tiles_bgr)
+    cv2.imwrite(os.path.join(output_dir, "03_mosaic_preprocessed.jpg"), mosaic)
 
-        if confidence > best_confidence:
-            best_confidence = confidence
-            best_position   = (lat, lon)
+    tmpl_lat, tmpl_lon, tmpl_peak, tmpl_loc, tmpl_res = localize_template_on_mosaic(
+        mosaic,
+        processed_drone,
+        x_min_m, y_min_m, n_rows,
+        tile_w_m, tile_h_m, TILE_PX,
+        LAUNCH_LAT, LAUNCH_LON,
+    )
+    th, tw = processed_drone.shape[:2]
+    cu = tmpl_loc[0] + 0.5 * tw
+    cv = tmpl_loc[1] + 0.5 * th
+    col_p = int(math.floor(cu / TILE_PX))
+    irow_p = int(math.floor(cv / TILE_PX))
+    peak_cell = (col_p, n_rows - 1 - irow_p)
+    for idx in range(len(candidate_data)):
+        c, r = idx_to_cell[idx]
+        candidate_data[idx]["confidence"] = 0.95 if (c, r) == peak_cell else 0.35
+
+    vis = cv2.cvtColor(mosaic, cv2.COLOR_GRAY2BGR)
+    cv2.rectangle(vis, tmpl_loc, (tmpl_loc[0] + tw, tmpl_loc[1] + th), (0, 255, 0), 3)
+    cv2.imwrite(os.path.join(output_dir, "04_mosaic_template_peak.jpg"), vis)
+
+    heat = cv2.normalize(tmpl_res, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    cv2.imwrite(os.path.join(output_dir, "05_match_template_heatmap.jpg"), heat)
+    save_template_vs_mosaic_crop(output_dir, processed_drone, mosaic, tmpl_loc)
+    print(f"[TEST] Template peak NCC = {tmpl_peak:.3f} at pixel offset {tmpl_loc}")
 
     # ===== VISUALISATION =====================================================
     print(f"\n[TEST] Creating tile-grid visualisations…")
@@ -885,34 +994,23 @@ def main():
     print("LOCALIZATION RESULT")
     print("=" * 60)
 
-    if best_position is None:
-        print("STATUS: FAILED — no valid matches")
+    print("Template match on stitched mosaic (sub-tile):")
+    print(f"  Position      : ({tmpl_lat:.6f}, {tmpl_lon:.6f})")
+    print(f"  NCC peak      : {tmpl_peak:.3f}")
 
-    elif best_confidence >= 0.60:
-        print("STATUS: LOCALIZED")
-        print(f"Estimated Position  : ({best_position[0]:.6f}, {best_position[1]:.6f})")
-        print(f"Confidence          : {best_confidence:.2%}")
-
-        dx_t, dy_t = latlon_to_meters(TARGET_LAT, TARGET_LON, LAUNCH_LAT, LAUNCH_LON)
-        bearing    = math.atan2(dx_t, dy_t)
-        dr_lat, dr_lon = offset_coordinates(
-            LAUNCH_LAT, LAUNCH_LON,
-            DISTANCE_TRAVELED_M * math.sin(bearing),
-            DISTANCE_TRAVELED_M * math.cos(bearing),
-        )
-        dr_error = haversine_distance(best_position[0], best_position[1],
-                                      dr_lat, dr_lon)
-
-        print(f"Dead Reckoning Error: {dr_error:.1f}m")
-        print(f"Distance from Launch: "
-              f"{haversine_distance(LAUNCH_LAT, LAUNCH_LON, best_position[0], best_position[1]):.1f}m")
-        print(f"Distance to Target  : "
-              f"{haversine_distance(best_position[0], best_position[1], TARGET_LAT, TARGET_LON):.1f}m")
-
-    else:
-        print("STATUS: UNCERTAIN")
-        print(f"Best Match  : ({best_position[0]:.6f}, {best_position[1]:.6f})")
-        print(f"Confidence  : {best_confidence:.2%} (below 0.60 threshold)")
+    dx_t, dy_t = latlon_to_meters(TARGET_LAT, TARGET_LON, LAUNCH_LAT, LAUNCH_LON)
+    bearing    = math.atan2(dx_t, dy_t)
+    dr_lat, dr_lon = offset_coordinates(
+        LAUNCH_LAT, LAUNCH_LON,
+        DISTANCE_TRAVELED_M * math.sin(bearing),
+        DISTANCE_TRAVELED_M * math.cos(bearing),
+    )
+    dr_err_tmpl = haversine_distance(tmpl_lat, tmpl_lon, dr_lat, dr_lon)
+    print(f"\nDead-reckoning vs template fix : {dr_err_tmpl:.1f} m")
+    print(f"Distance from launch (template): "
+          f"{haversine_distance(LAUNCH_LAT, LAUNCH_LON, tmpl_lat, tmpl_lon):.1f} m")
+    print(f"Distance to target (template)   : "
+          f"{haversine_distance(tmpl_lat, tmpl_lon, TARGET_LAT, TARGET_LON):.1f} m")
 
     print(f"\nZoom Level Used  : {zoom}")
     print(f"Tile Footprint   : {tile_w_m:.1f}m × {tile_h_m:.1f}m")
@@ -920,12 +1018,7 @@ def main():
     print(f"Output Directory : {output_dir}")
     print("=" * 60 + "\n")
 
-    print("Top 3 Matches:")
-    for i, r in enumerate(sorted(results,
-                                  key=lambda x: x["confidence"],
-                                  reverse=True)[:3]):
-        print(f"  {i + 1}. ({r['position'][0]:.6f}, {r['position'][1]:.6f})"
-              f"  —  {r['confidence']:.2%}")
+    print_visual_evaluation_guide()
 
 
 if __name__ == "__main__":
