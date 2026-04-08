@@ -1,3 +1,5 @@
+![Schematic](images/demo.svg)
+
 ### Background
 Modern autonomous drone operations increasingly face GPS-denied or GPS-contested environments where traditional positioning systems are unreliable, jammed, or spoofed. For extended-range missions—whether covert military operations, search and rescue in remote terrain, or operations in electronically hostile environments—drones must navigate without continuous external positioning data while maintaining situational awareness and mission effectiveness.
 
@@ -24,5 +26,3 @@ Sandwalk is an onboard, vision-based absolute positioning system that enables dr
 **Operational Security**: All processing occurs onboard. No position data, imagery, or telemetry is transmitted. The drone carries satellite imagery tiles pre-loaded for its operational area, making it resilient to communication jamming and undetectable through RF emissions analysis.
 
 Sandwalk replaces fragile dead-reckoning navigation with robust vision-based localization, giving autonomous drones the ability to answer "where am I?" without GPS, without transmitting data, and without requiring pre-mapped 3D environments.
-
-![Schematic](images/search_visualization_with_drone.png)

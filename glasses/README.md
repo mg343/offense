@@ -1,3 +1,5 @@
+![Schematic](images/schematic.png)
+
 ### Background
 In the current state of covert military operations, a heavy emphasis is being placed on the usage of kamikaze drones, or drones that are commissioned with the express purpose of blowing up/delivering a payload.
 
@@ -12,5 +14,3 @@ The hyper paramaterization of these drones makes these weapons entirely ineffect
 
 ### Glasses
 Glasses is an onboard, perception-based validation system that allows autonomous drones to confirm whether they are in the correct location without transmitting explicit positional data. Instead of relying on rigid, pre-programmed distance, timing, or motor-usage heuristics, Glasses leverages onboard sensing to compare what the drone observes in real time against preloaded environmental priors (e.g., satellite imagery, terrain features, or structural layouts). By shifting from hyper-parameterized execution to perceptual confirmation, Glasses enables drones to adapt to drift, weather, and minor system failures while maintaining operational security. The system operates entirely on the vehicle, requiring no external communication during flight. Glasses replaces the lengthy assumptions typically given to kamikaze drones with situational awareness, allowing these systems to verify where they are, not just assume they arrived or comply with faulty hardcoded conditions.
-
-![Schematic](images/schematic.png)
