@@ -1,5 +1,7 @@
 # sandwalk brain dump.
 
+# future work - integrating single_shot into the video loop
+
 # essentially the same as glasses, just using vision localization over a range of possible inputs to determine location, instead of using vision localization to determine if location has been reached
 # majority of the code should stay the same
 
