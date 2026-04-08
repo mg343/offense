@@ -333,26 +333,35 @@ def preprocess_frame(frame: np.ndarray, target_size: int = 640) -> np.ndarray:
     return sharpened
 
 
+def tight_cell_bounds(cell_map: Dict) -> Tuple[int, int, int, int]:
+    """Minimal inclusive (col0, col1, row0, row1) covering all arc tiles."""
+    cols = [c for (c, _) in cell_map.keys()]
+    rows = [r for (_, r) in cell_map.keys()]
+    return min(cols), max(cols), min(rows), max(rows)
+
+
 def mosaic_pixel_to_latlon(
     gu: float,
     gv: float,
     x_min: float,
     y_min: float,
-    n_rows: int,
     tile_w_m: float,
     tile_h_m: float,
     tile_px: int,
     launch_lat: float,
     launch_lon: float,
+    col0: int,
+    row1: int,
 ) -> Tuple[float, float]:
-    """Map pixel in north-up mosaic (origin top-left = NW of grid cell col=0 north row) to lat/lon."""
+    """Map pixel in north-up tight mosaic to lat/lon. Top row of image = grid row row1 (north)."""
     mpp_x = tile_w_m / tile_px
     mpp_y = tile_h_m / tile_px
-    col   = int(math.floor(gu / tile_px))
+    ic    = int(math.floor(gu / tile_px))
     irow  = int(math.floor(gv / tile_px))
-    tp = gu - col * tile_px
+    col      = col0 + ic
+    grid_row = row1 - irow
+    tp = gu - ic * tile_px
     tq = gv - irow * tile_px
-    grid_row = n_rows - 1 - irow
     cx = x_min + (col + 0.5) * tile_w_m
     cy = y_min + (grid_row + 0.5) * tile_h_m
     east_nw   = cx - tile_w_m / 2.0
@@ -363,19 +372,27 @@ def mosaic_pixel_to_latlon(
 
 
 def build_preprocessed_mosaic(
-    n_cols: int,
-    n_rows: int,
     tile_px: int,
     tiles_bgr: Dict[Tuple[int, int], np.ndarray],
+    col0: int,
+    col1: int,
+    row0: int,
+    row1: int,
     fill: int = 127,
 ) -> np.ndarray:
-    """Stack satellite tiles into one north-up grayscale mosaic (same preprocess as drone)."""
-    mosaic = np.full((n_rows * tile_px, n_cols * tile_px), fill, dtype=np.uint8)
-    for row in range(n_rows):
-        for col in range(n_cols):
-            ir = n_rows - 1 - row
-            y0, y1 = ir * tile_px, (ir + 1) * tile_px
-            x0, x1 = col * tile_px, (col + 1) * tile_px
+    """
+    North-up mosaic over inclusive col/row range only. Gray only for cells inside
+    the box that have no tile (jagged arc); no outer padding beyond fetched tiles.
+    """
+    n_cols_m = col1 - col0 + 1
+    n_rows_m = row1 - row0 + 1
+    mosaic = np.full((n_rows_m * tile_px, n_cols_m * tile_px), fill, dtype=np.uint8)
+    for row in range(row0, row1 + 1):
+        for col in range(col0, col1 + 1):
+            ir_tight = row1 - row
+            y0, y1 = ir_tight * tile_px, (ir_tight + 1) * tile_px
+            ic = col - col0
+            x0, x1 = ic * tile_px, (ic + 1) * tile_px
             tile = tiles_bgr.get((col, row))
             if tile is not None:
                 mosaic[y0:y1, x0:x1] = preprocess_frame(tile, tile_px)
@@ -387,12 +404,13 @@ def localize_template_on_mosaic(
     template: np.ndarray,
     x_min: float,
     y_min: float,
-    n_rows: int,
     tile_w_m: float,
     tile_h_m: float,
     tile_px: int,
     launch_lat: float,
     launch_lon: float,
+    col0: int,
+    row1: int,
 ) -> Tuple[float, float, float, Tuple[int, int], np.ndarray]:
     """
     cv2.matchTemplate + minMaxLoc → lat/lon at template centre (OpenCV flow:
@@ -411,8 +429,9 @@ def localize_template_on_mosaic(
     cu = u + 0.5 * tw
     cv = v + 0.5 * th
     lat, lon = mosaic_pixel_to_latlon(
-        float(cu), float(cv), x_min, y_min, n_rows,
+        float(cu), float(cv), x_min, y_min,
         tile_w_m, tile_h_m, tile_px, launch_lat, launch_lon,
+        col0, row1,
     )
     return lat, lon, float(max_val), (u, v), res
 
@@ -445,8 +464,8 @@ def print_visual_evaluation_guide() -> None:
           "  OK: clear ground features. Bad: heavy motion blur, wrong scale vs map zoom.\n")
     print("02b_drone_preprocessed_template.jpg — Exact grayscale template slid over the mosaic.\n"
           "  OK: sharp edges/contrast like mosaic tiles. Bad: black/empty; very different look vs 03.\n")
-    print("03_mosaic_preprocessed.jpg — Stitched preprocessed satellite search area.\n"
-          "  OK: terrain continuous, mostly real imagery. Bad: large gray 'NO DATA' gaps in the ring.\n")
+    print("03_mosaic_preprocessed.jpg — Tight rectangle around fetched tiles only (gray = holes inside that box).\n"
+          "  OK: terrain continuous, mostly real imagery. Bad: large gray where tiles failed to load.\n")
     print("04_mosaic_template_peak.jpg — Mosaic + green box = winning 640x640 window.\n"
           "  OK: box covers terrain that matches the template. Bad: box on gray, or wrong texture.\n")
     print("05_match_template_heatmap.jpg — NCC surface (min-max stretched to 0-255).\n"
@@ -925,22 +944,26 @@ def main():
 
     # ===== STITCH MOSAIC + TEMPLATE MATCH ====================================
     print(f"\n[TEST] Building preprocessed mosaic and running template match…")
-    mosaic = build_preprocessed_mosaic(n_cols, n_rows, TILE_PX, tiles_bgr)
+    c0, c1, r0, r1 = tight_cell_bounds(cell_map)
+    print(f"[GRID] Tight mosaic (match only): cols [{c0},{c1}] × rows [{r0},{r1}] "
+          f"= {c1 - c0 + 1}×{r1 - r0 + 1} (snapped search grid was {n_cols}×{n_rows})")
+    mosaic = build_preprocessed_mosaic(TILE_PX, tiles_bgr, c0, c1, r0, r1)
     cv2.imwrite(os.path.join(output_dir, "03_mosaic_preprocessed.jpg"), mosaic)
 
     tmpl_lat, tmpl_lon, tmpl_peak, tmpl_loc, tmpl_res = localize_template_on_mosaic(
         mosaic,
         processed_drone,
-        x_min_m, y_min_m, n_rows,
+        x_min_m, y_min_m,
         tile_w_m, tile_h_m, TILE_PX,
         LAUNCH_LAT, LAUNCH_LON,
+        c0, r1,
     )
     th, tw = processed_drone.shape[:2]
     cu = tmpl_loc[0] + 0.5 * tw
     cv = tmpl_loc[1] + 0.5 * th
-    col_p = int(math.floor(cu / TILE_PX))
+    col_p = c0 + int(math.floor(cu / TILE_PX))
     irow_p = int(math.floor(cv / TILE_PX))
-    peak_cell = (col_p, n_rows - 1 - irow_p)
+    peak_cell = (col_p, r1 - irow_p)
     for idx in range(len(candidate_data)):
         c, r = idx_to_cell[idx]
         candidate_data[idx]["confidence"] = 0.95 if (c, r) == peak_cell else 0.35
