@@ -4,3 +4,5 @@
 /darts/src/files/
 /precisionlanding/src/files/
 /copperdome/src/files/
+.*
+!/.gitignore
