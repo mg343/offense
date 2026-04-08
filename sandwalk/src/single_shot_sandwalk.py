@@ -18,6 +18,9 @@ import matplotlib.pyplot as plt
 from matplotlib.path import Path as MplPath
 from matplotlib.patches import Polygon
 
+# Empty mosaic cells / BGR placeholder after gray→color (must match build_preprocessed_mosaic fill).
+MOSAIC_EMPTY_FILL_U8 = 127
+
 
 # ---------------------------------------------------------------------------
 # Coordinate math primitives  (unchanged)
@@ -372,7 +375,7 @@ def build_preprocessed_mosaic(
     col1: int,
     row0: int,
     row1: int,
-    fill: int = 127,
+    fill: int = MOSAIC_EMPTY_FILL_U8,
 ) -> np.ndarray:
     """
     North-up mosaic over inclusive col/row range. Gray fill for cells with no
@@ -449,6 +452,79 @@ def save_template_vs_mosaic_crop(
     cv2.imwrite(os.path.join(output_dir, "06_template_vs_mosaic_crop.jpg"), combo)
 
 
+def save_mission_metrics_figure(
+    output_dir: str,
+    distance_traveled_m: float,
+    tmpl_lat: float,
+    tmpl_lon: float,
+    match_confidence: float,
+) -> None:
+    """Odometry, estimated lat/lon, and match confidence — own figure for readable scale."""
+    lat_h = "N" if tmpl_lat >= 0 else "S"
+    lon_h = "E" if tmpl_lon >= 0 else "W"
+    lines = [
+        f"Distance Traveled from Takeoff (Motor Odometry): {distance_traveled_m:.1f} m",
+        f"Estimated Drone Coordinates: {abs(tmpl_lat):.6f}° {lat_h}, {abs(tmpl_lon):.6f}° {lon_h}",
+        f"Match Confidence: {match_confidence:.3f}",
+    ]
+    fig = plt.figure(figsize=(11, 3.8), dpi=150)
+    fig.patch.set_facecolor("white")
+    fig.text(
+        0.06,
+        0.5,
+        "\n".join(lines),
+        ha="left",
+        va="center",
+        fontsize=14,
+        color="#1a1a1a",
+        linespacing=1.55,
+        bbox={
+            "boxstyle": "round,pad=0.7",
+            "facecolor": "#f5f5f5",
+            "edgecolor": "#444444",
+            "linewidth": 1.3,
+        },
+    )
+    out = os.path.join(output_dir, "07b_mission_metrics.png")
+    plt.savefig(out, bbox_inches="tight", pad_inches=0.35)
+    plt.close()
+    print(f"[VIZ] Saved mission metrics: {out}")
+
+
+def save_template_match_comparison_figure(
+    output_dir: str,
+    processed_drone: np.ndarray,
+    mosaic: np.ndarray,
+    tmpl_loc: Tuple[int, int],
+    gap_px: int = 36,
+    title_h: int = 64,
+) -> None:
+    """Drone template vs mosaic crop at peak; full resolution, labels, white gutter."""
+    th, tw = processed_drone.shape[:2]
+    u, v = tmpl_loc
+    crop = mosaic[v : v + th, u : u + tw]
+    left = cv2.cvtColor(processed_drone, cv2.COLOR_GRAY2BGR)
+    right = cv2.cvtColor(crop, cv2.COLOR_GRAY2BGR)
+    sep = np.full((th, gap_px, 3), 255, dtype=np.uint8)
+    combo = np.hstack([left, sep, right])
+    w_canvas = combo.shape[1]
+    canvas = np.full((th + title_h, w_canvas, 3), 255, dtype=np.uint8)
+    canvas[title_h:, :] = combo
+    fs = max(0.85, min(2.0, th / 280.0))
+    thick = max(1, int(round(fs)))
+    cv2.putText(
+        canvas, "Drone image", (12, int(title_h * 0.62)),
+        cv2.FONT_HERSHEY_SIMPLEX, fs, (26, 26, 26), thick, cv2.LINE_AA,
+    )
+    cv2.putText(
+        canvas, "Match prediction", (tw + gap_px + 10, int(title_h * 0.62)),
+        cv2.FONT_HERSHEY_SIMPLEX, fs, (26, 26, 26), thick, cv2.LINE_AA,
+    )
+    out = os.path.join(output_dir, "07c_template_match_compare.png")
+    cv2.imwrite(out, canvas)
+    print(f"[VIZ] Saved template match comparison: {out}")
+
+
 def save_mission_context_figure(
     output_dir: str,
     launch_lat: float,
@@ -463,6 +539,7 @@ def save_mission_context_figure(
     y_min_m: float,
     n_cols: int,
     n_rows: int,
+    drone_bgr: np.ndarray,
     launch_bgr: np.ndarray,
     target_bgr: np.ndarray,
     mosaic_peak_bgr: np.ndarray,
@@ -470,9 +547,10 @@ def save_mission_context_figure(
     tmpl_lon: float,
 ) -> None:
     """
-    Metre plane (east X, north Y) from launch. Draws hemisphere-limited search ring,
-    Static Map footprints for launch & target, semi-transparent stitched mosaic + peak box,
-    and the template-fix point in map space.
+    Metre plane (east X, north Y) from launch: search ring, launch/target tiles,
+    mosaic + peak with unfilled cells transparent (see MOSAIC_EMPTY_FILL_U8), location
+    marker, and raw-drone inset (top-left). Metrics and template comparison are saved
+    as separate images (07b, 07c).
     """
     tw, th = tile_w_m, tile_h_m
     tgt_x, tgt_y = latlon_to_meters(target_lat, target_lon, launch_lat, launch_lon)
@@ -506,28 +584,49 @@ def save_mission_context_figure(
         ext_t = (tgt_x - tw / 2, tgt_x + tw / 2, tgt_y - th / 2, tgt_y + th / 2)
         ax.imshow(rgb_t, extent=ext_t, origin="upper", aspect="auto", zorder=2, interpolation="bilinear")
 
-    # ---- mosaic + template peak (full snapped grid, same georef as mosaic) ---
+    # ---- mosaic + template peak (empty mosaic cells = transparent) ----------
     left_m = x_min_m
     right_m = x_min_m + n_cols * tw
     bottom_m = y_min_m
     top_m = y_min_m + n_rows * th
-    mp = cv2.cvtColor(mosaic_peak_bgr, cv2.COLOR_BGR2RGB)
+    mp_rgb = cv2.cvtColor(mosaic_peak_bgr, cv2.COLOR_BGR2RGB)
+    is_empty = np.all(mosaic_peak_bgr == MOSAIC_EMPTY_FILL_U8, axis=2)
+    mosaic_im_alpha = 0.52
+    a_chan = np.full(is_empty.shape, int(round(mosaic_im_alpha * 255)), dtype=np.uint8)
+    a_chan[is_empty] = 0
+    rgba = np.dstack([mp_rgb, a_chan])
     ax.imshow(
-        mp,
+        rgba,
         extent=(left_m, right_m, bottom_m, top_m),
         origin="upper",
         aspect="auto",
         zorder=3,
-        alpha=0.48,
         interpolation="bilinear",
     )
 
+    # ---- drone input (inset over map, axes coords — not georeferenced) -----
+    if drone_bgr is not None:
+        ax_drone = ax.inset_axes(
+            (0.02, 0.74, 0.22, 0.22),
+            transform=ax.transAxes,
+            zorder=12,
+        )
+        rgb_d = cv2.cvtColor(drone_bgr, cv2.COLOR_BGR2RGB)
+        ax_drone.imshow(rgb_d, aspect="equal", interpolation="bilinear")
+        ax_drone.set_xticks([])
+        ax_drone.set_yticks([])
+        ax_drone.set_title("Drone input", fontsize=9, color="#1a1a1a", pad=3)
+        for s in ax_drone.spines.values():
+            s.set_edgecolor("#333333")
+            s.set_linewidth(1.5)
+        ax_drone.set_facecolor("#fafafa")
+
     # ---- template lat/lon fix ---------------------------------------------
     mx, my = latlon_to_meters(tmpl_lat, tmpl_lon, launch_lat, launch_lon)
-    ax.plot(mx, my, "+", color="lime", markersize=16, markeredgewidth=2.5, zorder=5, label="Template fix")
+    ax.plot(mx, my, "+", color="lime", markersize=16, markeredgewidth=2.5, zorder=5, label="Location match")
 
     ax.plot(0.0, 0.0, "s", color="darkgreen", markersize=8, zorder=6, label="Launch")
-    ax.plot(tgt_x, tgt_y, "*", color="darkred", markersize=12, zorder=6, label="Target centre")
+    ax.plot(tgt_x, tgt_y, "*", color="darkred", markersize=12, zorder=6, label="Search zone")
 
     pad = max(r_max, abs(left_m), abs(right_m), abs(bottom_m), abs(top_m), 1.0) * 0.08
     xs = [-tw / 2, tw / 2, tgt_x - tw / 2, tgt_x + tw / 2, left_m, right_m, mx]
@@ -543,12 +642,12 @@ def save_mission_context_figure(
     ax.set_ylabel("North from launch (m)")
     ax.set_title("Sandwalk — search zone, reference tiles, mosaic + template peak")
     ax.set_aspect("equal", "box")
-    ax.legend(loc="upper left", fontsize=9)
+    ax.legend(loc="upper right", fontsize=9)
     ax.grid(True, alpha=0.25)
 
-    out = os.path.join(output_dir, "07_mission_context.png")
     plt.tight_layout()
-    plt.savefig(out, dpi=150, bbox_inches="tight")
+    out = os.path.join(output_dir, "07_mission_context.png")
+    plt.savefig(out, dpi=150, bbox_inches="tight", pad_inches=0.3)
     plt.close()
     print(f"[VIZ] Saved mission context: {out}")
 
@@ -569,9 +668,10 @@ def print_visual_evaluation_guide() -> None:
           "  OK: box covers terrain that matches the template. Bad: box on gray, or wrong texture.\n")
     print("06_template_vs_mosaic_crop.jpg — Template | mosaic patch at peak (quick eyeball match).\n"
           "  OK: left and right look like the same place (feature alignment). Bad: uncorrelated patterns.\n")
-    print("07_mission_context.png — Metres from launch: red = search ring, tiles = launch/target footprints,\n"
-          "  faded layer = mosaic+green peak, lime + = template lat/lon fix.\n")
-    print("NCC peak is only in the console log (not saved as an image).\n"
+    print("07_mission_context.png — Map-only context: ring, tiles, mosaic (holes transparent), + match, drone inset.\n")
+    print("07b_mission_metrics.png — Motor odometry, estimated coords, match confidence (readable typography).\n")
+    print("07c_template_match_compare.png — Full-res drone template vs mosaic at peak, labeled.\n")
+    print("NCC peak is also in 07b and the console log.\n"
           + "-" * 60)
 
 
@@ -710,11 +810,22 @@ def main():
         x_min_m, y_min_m,
         n_cols,
         n_rows,
+        drone_frame,
         launch_image,
         target_image,
         vis,
         tmpl_lat,
         tmpl_lon,
+    )
+    save_mission_metrics_figure(
+        output_dir,
+        DISTANCE_TRAVELED_M,
+        tmpl_lat,
+        tmpl_lon,
+        tmpl_peak,
+    )
+    save_template_match_comparison_figure(
+        output_dir, processed_drone, mosaic, tmpl_loc,
     )
 
     # ===== RESULTS ===========================================================
