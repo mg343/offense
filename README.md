@@ -5,14 +5,14 @@ A suite of solutions to tackle interesting problems in the usage of autonomous d
 ### [Sandwalk](https://github.com/mg343/offense/tree/main/sandwalk)
 Global Localization via Satellite Imagery Matching under Bounded Dead-Reckoning Search.
 
-### [Darts](https://github.com/mg343/offense/tree/main/darts)
-Ballistic Launch Solver for Targeting Earth from Moving Space Platforms.
-
 ### [Precision Landing](https://github.com/mg343/offense/tree/main/precisionlanding)
 Vision-based helicopter precision landing system.
 
 ### [Glasses](https://github.com/mg343/offense/tree/main/glasses)
 Target Validation via Visual Environmental Prior Matching.
 
-### [Copper Dome](https://github.com/mg343/offense/tree/main/copperdome)
+### [Darts (In Progress...)](https://github.com/mg343/offense/tree/main/darts)
+Ballistic Launch Solver for Targeting Earth from Moving Space Platforms.
+
+### [Copper Dome (In Progress...)](https://github.com/mg343/offense/tree/main/copperdome)
 Point‑Defense System for Intercepting "Missiles" Using "Ballistic Countermeasures".
