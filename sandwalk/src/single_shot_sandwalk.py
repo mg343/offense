@@ -14,6 +14,10 @@ from io import BytesIO
 from PIL import Image
 import math
 
+import matplotlib.pyplot as plt
+from matplotlib.path import Path as MplPath
+from matplotlib.patches import Polygon
+
 
 # ---------------------------------------------------------------------------
 # Coordinate math primitives  (unchanged)
@@ -146,55 +150,51 @@ def _snap_bbox(x_min: float, x_max: float,
     return snapped_x_min, snapped_x_max, snapped_y_min, snapped_y_max
 
 
-def _tile_intersects_arc(cx: float, cy: float,
-                         tw: float, th: float,
-                         r_min: float, r_max: float,
-                         bearing_rad: float) -> bool:
+def _half_annulus_verts(r_inner: float, r_outer: float, bearing_rad: float, n: int = 160):
+    """Closed polygon vertices: half-annulus in (east, north) metres from launch."""
+    r_lo = max(r_inner, 1e-3)
+    a0, a1 = bearing_rad - math.pi / 2, bearing_rad + math.pi / 2
+    angles = [a0 + (a1 - a0) * i / n for i in range(n + 1)]
+    verts = [(r_outer * math.sin(a), r_outer * math.cos(a)) for a in angles]
+    for i in range(n, -1, -1):
+        a = angles[i]
+        verts.append((r_lo * math.sin(a), r_lo * math.cos(a)))
+    return verts
+
+
+def _search_arc_path(r_min: float, r_max: float, bearing_rad: float) -> MplPath:
+    """Matplotlib path for the filled half-annulus (same geometry as mission viz)."""
+    v = _half_annulus_verts(r_min, r_max, bearing_rad)
+    return MplPath(np.asarray(v, dtype=float), closed=True)
+
+
+def _tile_intersects_arc(
+    cx: float,
+    cy: float,
+    tw: float,
+    th: float,
+    arc_path: MplPath,
+) -> bool:
     """
-    Return True if the tile rectangle [cx-tw/2, cx+tw/2] x [cy-th/2, cy+th/2]
-    has any overlap with the search arc.
-
-    Search arc = half-annulus:
-        r_min <= sqrt(x^2 + y^2) <= r_max
-        AND point bearing within +/- pi/2 of bearing_rad
-
-    Test: the four corners of the tile plus its centre.
-    If ANY of those five points satisfies both constraints, the tile is kept.
-
-    This is deliberately conservative: edge tiles that barely clip the arc
-    boundary are included.  That guarantees zero missed coverage — the hard
-    requirement — at the cost of a small number of extra boundary tiles.
+    True iff the axis-aligned tile footprint intersects the half-annulus polygon.
+    Corner/centre tests catch common cases; inner grid catches slivers the 5-point
+    sampling used to miss.
     """
     hw, hh = tw / 2, th / 2
-    test_pts = [
-        (cx,      cy     ),   # centre
-        (cx - hw, cy - hh),   # SW corner
-        (cx + hw, cy - hh),   # SE corner
-        (cx - hw, cy + hh),   # NW corner
-        (cx + hw, cy + hh),   # NE corner
-    ]
-
-    for px, py in test_pts:
-        dist = math.hypot(px, py)
-
-        if dist < 1e-6:
-            # exactly at launch origin — inside arc only when r_min == 0
-            if r_min == 0:
-                return True
-            continue
-
-        if not (r_min <= dist <= r_max):
-            continue
-
-        # bearing of this point from origin (atan2(east, north) = clockwise from north)
-        point_bearing = math.atan2(px, py)
-
-        # normalise angular difference to [-pi, pi]
-        diff = (point_bearing - bearing_rad + math.pi) % (2 * math.pi) - math.pi
-
-        if abs(diff) <= math.pi / 2:
+    left, right = cx - hw, cx + hw
+    bottom, top = cy - hh, cy + hh
+    for px, py in (
+        (left, bottom), (right, bottom), (right, top), (left, top), (cx, cy)
+    ):
+        if arc_path.contains_point((px, py)):
             return True
-
+    steps = 16
+    for ix in range(steps + 1):
+        for iy in range(steps + 1):
+            px = left + (right - left) * ix / steps
+            py = bottom + (top - bottom) * iy / steps
+            if arc_path.contains_point((px, py)):
+                return True
     return False
 
 
@@ -247,9 +247,12 @@ def generate_tile_grid(
     # 5. Snap outward
     x_min, x_max, y_min, y_max = _snap_bbox(x_min, x_max, y_min, y_max, tile_w_m, tile_h_m)
 
-    # 6. Grid centres
-    n_cols = round((x_max - x_min) / tile_w_m)
-    n_rows = round((y_max - y_min) / tile_h_m)
+    # 6. Grid dimensions (cover snapped rectangle; avoid round()/float drift)
+    w_box, h_box = x_max - x_min, y_max - y_min
+    n_cols = max(1, int(math.ceil(w_box / tile_w_m - 1e-9)))
+    n_rows = max(1, int(math.ceil(h_box / tile_h_m - 1e-9)))
+
+    arc_path = _search_arc_path(r_min, r_max, bearing)
 
     candidates = []
     cell_map   = {}   # (col, row) -> index into candidates list
@@ -259,8 +262,8 @@ def generate_tile_grid(
             cx = x_min + (col + 0.5) * tile_w_m
             cy = y_min + (row + 0.5) * tile_h_m
 
-            # 7. Keep only tiles that overlap the arc
-            if not _tile_intersects_arc(cx, cy, tile_w_m, tile_h_m, r_min, r_max, bearing):
+            # 7. Keep only tiles that overlap the search zone polygon
+            if not _tile_intersects_arc(cx, cy, tile_w_m, tile_h_m, arc_path):
                 continue
 
             cand_lat, cand_lon = offset_coordinates(launch_lat, launch_lon, cx, cy)
@@ -275,7 +278,7 @@ def generate_tile_grid(
           f"y=[{y_min:.1f}, {y_max:.1f}]m")
     print(f"[GRID] Grid dimensions : {n_cols} cols × {n_rows} rows "
           f"= {n_cols * n_rows} total cells")
-    print(f"[GRID] Tiles kept (arc intersect): {len(candidates)}")
+    print(f"[GRID] Tiles to fetch (zone intersect): {len(candidates)}")
 
     return candidates, zoom, tile_w_m, tile_h_m, r_min, r_max, n_cols, n_rows, cell_map, x_min, y_min
 
@@ -331,13 +334,6 @@ def preprocess_frame(frame: np.ndarray, target_size: int = 640) -> np.ndarray:
     return sharpened
 
 
-def tight_cell_bounds(cell_map: Dict) -> Tuple[int, int, int, int]:
-    """Minimal inclusive (col0, col1, row0, row1) covering all arc tiles."""
-    cols = [c for (c, _) in cell_map.keys()]
-    rows = [r for (_, r) in cell_map.keys()]
-    return min(cols), max(cols), min(rows), max(rows)
-
-
 def mosaic_pixel_to_latlon(
     gu: float,
     gv: float,
@@ -379,8 +375,8 @@ def build_preprocessed_mosaic(
     fill: int = 127,
 ) -> np.ndarray:
     """
-    North-up mosaic over inclusive col/row range only. Gray only for cells inside
-    the box that have no tile (jagged arc); no outer padding beyond fetched tiles.
+    North-up mosaic over inclusive col/row range. Gray fill for cells with no
+    tile data (non-intersecting cells or failed loads).
     """
     n_cols_m = col1 - col0 + 1
     n_rows_m = row1 - row0 + 1
@@ -453,6 +449,110 @@ def save_template_vs_mosaic_crop(
     cv2.imwrite(os.path.join(output_dir, "06_template_vs_mosaic_crop.jpg"), combo)
 
 
+def save_mission_context_figure(
+    output_dir: str,
+    launch_lat: float,
+    launch_lon: float,
+    target_lat: float,
+    target_lon: float,
+    tile_w_m: float,
+    tile_h_m: float,
+    r_min: float,
+    r_max: float,
+    x_min_m: float,
+    y_min_m: float,
+    n_cols: int,
+    n_rows: int,
+    launch_bgr: np.ndarray,
+    target_bgr: np.ndarray,
+    mosaic_peak_bgr: np.ndarray,
+    tmpl_lat: float,
+    tmpl_lon: float,
+) -> None:
+    """
+    Metre plane (east X, north Y) from launch. Draws hemisphere-limited search ring,
+    Static Map footprints for launch & target, semi-transparent stitched mosaic + peak box,
+    and the template-fix point in map space.
+    """
+    tw, th = tile_w_m, tile_h_m
+    tgt_x, tgt_y = latlon_to_meters(target_lat, target_lon, launch_lat, launch_lon)
+    bearing        = math.atan2(tgt_x, tgt_y)
+
+    fig, ax = plt.subplots(figsize=(12, 10))
+    ax.set_facecolor("#f4f4f4")
+    fig.patch.set_facecolor("#f4f4f4")
+
+    # ---- search zone (under imagery) -------------------------------------
+    zone = Polygon(
+        _half_annulus_verts(r_min, r_max, bearing),
+        closed=True,
+        facecolor="#ff4444",
+        edgecolor="#b00000",
+        linewidth=2.0,
+        alpha=0.22,
+        zorder=1,
+    )
+    ax.add_patch(zone)
+
+    # ---- launch tile (centred on origin) ----------------------------------
+    if launch_bgr is not None:
+        rgb = cv2.cvtColor(launch_bgr, cv2.COLOR_BGR2RGB)
+        ext_l = (-tw / 2, tw / 2, -th / 2, th / 2)
+        ax.imshow(rgb, extent=ext_l, origin="upper", aspect="auto", zorder=2, interpolation="bilinear")
+
+    # ---- target tile --------------------------------------------------------
+    if target_bgr is not None:
+        rgb_t = cv2.cvtColor(target_bgr, cv2.COLOR_BGR2RGB)
+        ext_t = (tgt_x - tw / 2, tgt_x + tw / 2, tgt_y - th / 2, tgt_y + th / 2)
+        ax.imshow(rgb_t, extent=ext_t, origin="upper", aspect="auto", zorder=2, interpolation="bilinear")
+
+    # ---- mosaic + template peak (full snapped grid, same georef as mosaic) ---
+    left_m = x_min_m
+    right_m = x_min_m + n_cols * tw
+    bottom_m = y_min_m
+    top_m = y_min_m + n_rows * th
+    mp = cv2.cvtColor(mosaic_peak_bgr, cv2.COLOR_BGR2RGB)
+    ax.imshow(
+        mp,
+        extent=(left_m, right_m, bottom_m, top_m),
+        origin="upper",
+        aspect="auto",
+        zorder=3,
+        alpha=0.48,
+        interpolation="bilinear",
+    )
+
+    # ---- template lat/lon fix ---------------------------------------------
+    mx, my = latlon_to_meters(tmpl_lat, tmpl_lon, launch_lat, launch_lon)
+    ax.plot(mx, my, "+", color="lime", markersize=16, markeredgewidth=2.5, zorder=5, label="Template fix")
+
+    ax.plot(0.0, 0.0, "s", color="darkgreen", markersize=8, zorder=6, label="Launch")
+    ax.plot(tgt_x, tgt_y, "*", color="darkred", markersize=12, zorder=6, label="Target centre")
+
+    pad = max(r_max, abs(left_m), abs(right_m), abs(bottom_m), abs(top_m), 1.0) * 0.08
+    xs = [-tw / 2, tw / 2, tgt_x - tw / 2, tgt_x + tw / 2, left_m, right_m, mx]
+    ys = [-th / 2, th / 2, tgt_y - th / 2, tgt_y + th / 2, bottom_m, top_m, my]
+    # include annulus extent
+    for a in (bearing - math.pi / 2, bearing + math.pi / 2):
+        xs += [r_max * math.sin(a) * 1.02]
+        ys += [r_max * math.cos(a) * 1.02]
+    ax.set_xlim(min(xs) - pad, max(xs) + pad)
+    ax.set_ylim(min(ys) - pad, max(ys) + pad)
+
+    ax.set_xlabel("East from launch (m)")
+    ax.set_ylabel("North from launch (m)")
+    ax.set_title("Sandwalk — search zone, reference tiles, mosaic + template peak")
+    ax.set_aspect("equal", "box")
+    ax.legend(loc="upper left", fontsize=9)
+    ax.grid(True, alpha=0.25)
+
+    out = os.path.join(output_dir, "07_mission_context.png")
+    plt.tight_layout()
+    plt.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"[VIZ] Saved mission context: {out}")
+
+
 def print_visual_evaluation_guide() -> None:
     """What each key output looks like and how to read success vs failure."""
     print("\n" + "-" * 60)
@@ -463,12 +563,14 @@ def print_visual_evaluation_guide() -> None:
     print("01_launch_location.jpg / 02_target_location.jpg — Static-map context at matched zoom.\n")
     print("02b_drone_preprocessed_template.jpg — Exact grayscale template slid over the mosaic.\n"
           "  OK: sharp edges/contrast like mosaic tiles. Bad: black/empty; very different look vs 03.\n")
-    print("03_mosaic_preprocessed.jpg — Tight rectangle around fetched tiles only (gray = holes inside that box).\n"
+    print("03_mosaic_preprocessed.jpg — Full snapped search grid; gray = cells outside zone or failed loads.\n"
           "  OK: terrain continuous, mostly real imagery. Bad: large gray where tiles failed to load.\n")
     print("04_mosaic_template_peak.jpg — Mosaic + green box = winning 640x640 window.\n"
           "  OK: box covers terrain that matches the template. Bad: box on gray, or wrong texture.\n")
     print("06_template_vs_mosaic_crop.jpg — Template | mosaic patch at peak (quick eyeball match).\n"
           "  OK: left and right look like the same place (feature alignment). Bad: uncorrelated patterns.\n")
+    print("07_mission_context.png — Metres from launch: red = search ring, tiles = launch/target footprints,\n"
+          "  faded layer = mosaic+green peak, lime + = template lat/lon fix.\n")
     print("NCC peak is only in the console log (not saved as an image).\n"
           + "-" * 60)
 
@@ -574,10 +676,11 @@ def main():
 
     # ===== STITCH MOSAIC + TEMPLATE MATCH ====================================
     print(f"\n[TEST] Building preprocessed mosaic and running template match…")
-    c0, c1, r0, r1 = tight_cell_bounds(cell_map)
-    print(f"[GRID] Tight mosaic (match only): cols [{c0},{c1}] × rows [{r0},{r1}] "
-          f"= {c1 - c0 + 1}×{r1 - r0 + 1} (snapped search grid was {n_cols}×{n_rows})")
-    mosaic = build_preprocessed_mosaic(TILE_PX, tiles_bgr, c0, c1, r0, r1)
+    print(f"[GRID] Mosaic: full snapped grid {n_cols}×{n_rows} cells "
+          f"(API tiles placed: {len(tiles_bgr)})")
+    mosaic = build_preprocessed_mosaic(
+        TILE_PX, tiles_bgr, 0, n_cols - 1, 0, n_rows - 1,
+    )
     cv2.imwrite(os.path.join(output_dir, "03_mosaic_preprocessed.jpg"), mosaic)
 
     tmpl_lat, tmpl_lon, tmpl_peak, tmpl_loc, _tmpl_res = localize_template_on_mosaic(
@@ -586,7 +689,7 @@ def main():
         x_min_m, y_min_m,
         tile_w_m, tile_h_m, TILE_PX,
         LAUNCH_LAT, LAUNCH_LON,
-        c0, r1,
+        0, n_rows - 1,
     )
     th, tw = processed_drone.shape[:2]
 
@@ -596,6 +699,23 @@ def main():
 
     save_template_vs_mosaic_crop(output_dir, processed_drone, mosaic, tmpl_loc)
     print(f"[TEST] Template peak NCC = {tmpl_peak:.3f} at pixel offset {tmpl_loc}")
+
+    print(f"\n[TEST] Saving mission context figure…")
+    save_mission_context_figure(
+        output_dir,
+        LAUNCH_LAT, LAUNCH_LON,
+        TARGET_LAT, TARGET_LON,
+        tile_w_m, tile_h_m,
+        r_min, r_max,
+        x_min_m, y_min_m,
+        n_cols,
+        n_rows,
+        launch_image,
+        target_image,
+        vis,
+        tmpl_lat,
+        tmpl_lon,
+    )
 
     # ===== RESULTS ===========================================================
     print("\n" + "=" * 60)
