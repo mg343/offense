@@ -13,9 +13,6 @@ import requests
 from io import BytesIO
 from PIL import Image
 import math
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 
 
 # ---------------------------------------------------------------------------
@@ -54,21 +51,22 @@ def offset_coordinates(lat: float, lon: float,
 # Zoom / altitude / tile-footprint helpers
 # ---------------------------------------------------------------------------
 
+# altitude_m = ALTITUDE_ZOOM_NUMERATOR_M / 2**zoom  =>  zoom = round(log2(num / altitude_m))
+ALTITUDE_ZOOM_NUMERATOR_M = 591_657_550.5
+
+
 def altitude_to_zoom(altitude_m: float) -> int:
     """
-    Convert drone altitude (metres AGL) to the best matching Google Maps zoom
-    level for the Static Maps API (V3, max zoom 21).
+    Maps barometric / assumed AGL altitude (metres) to Static Maps zoom integer.
 
-    Derived from Google Maps JS internals (see convertRangeToZoom):
-        range = 35_200_000 / 2^zoom
-    We treat 'range' as equivalent to camera-eye altitude in metres, so:
-        zoom = round( log2(35_200_000 / altitude_m) )
+    Uses:  altitude_m = ALTITUDE_ZOOM_NUMERATOR_M / 2**zoom_level
+    so:     zoom = round( log2(ALTITUDE_ZOOM_NUMERATOR_M / altitude_m) )
 
-    Clamped to [0, 21] per V3 spec.
+    Example: 2257 m -> zoom 18.  Clamped to [0, 21] for the API.
     """
     if altitude_m <= 0:
         return 21
-    zoom = round(math.log(35_200_000 / altitude_m) / math.log(2))
+    zoom = round(math.log(ALTITUDE_ZOOM_NUMERATOR_M / altitude_m) / math.log(2))
     return int(max(0, min(21, zoom)))
 
 
@@ -462,374 +460,17 @@ def print_visual_evaluation_guide() -> None:
     print("-" * 60)
     print("00_drone_image.jpg — Raw input. Sanity: right scene, roughly nadir-ish satellite-like.\n"
           "  OK: clear ground features. Bad: heavy motion blur, wrong scale vs map zoom.\n")
+    print("01_launch_location.jpg / 02_target_location.jpg — Static-map context at matched zoom.\n")
     print("02b_drone_preprocessed_template.jpg — Exact grayscale template slid over the mosaic.\n"
           "  OK: sharp edges/contrast like mosaic tiles. Bad: black/empty; very different look vs 03.\n")
     print("03_mosaic_preprocessed.jpg — Tight rectangle around fetched tiles only (gray = holes inside that box).\n"
           "  OK: terrain continuous, mostly real imagery. Bad: large gray where tiles failed to load.\n")
     print("04_mosaic_template_peak.jpg — Mosaic + green box = winning 640x640 window.\n"
           "  OK: box covers terrain that matches the template. Bad: box on gray, or wrong texture.\n")
-    print("05_match_template_heatmap.jpg — NCC surface (min-max stretched to 0-255).\n"
-          "  OK: one brightest blob (clear peak). Bad: flat gray (no winner) or several equal hotspots.\n")
     print("06_template_vs_mosaic_crop.jpg — Template | mosaic patch at peak (quick eyeball match).\n"
           "  OK: left and right look like the same place (feature alignment). Bad: uncorrelated patterns.\n")
-    print("Also check printed NCC peak: higher is usually more decisive (scene-dependent baseline).\n"
+    print("NCC peak is only in the console log (not saved as an image).\n"
           + "-" * 60)
-
-
-# ---------------------------------------------------------------------------
-# Visualisation
-# ---------------------------------------------------------------------------
-
-def create_range_map_collage(
-    candidate_data: List[Dict],
-    n_cols: int,
-    n_rows: int,
-    cell_map: Dict,
-    tile_px: int,
-    output_dir: str,
-) -> np.ndarray:
-    px = tile_px
-
-    # --- 1. Build placeholder tile as GRAYSCALE (2D) -----------------------
-    # Initializing without the '3' channel dimension
-    placeholder = np.full((px, px), 220, dtype=np.uint8)   # light grey (2D)
-
-    # Drawing functions work on 2D arrays using scalar values for color
-    hatch_color = 180
-    spacing = 32
-    for k in range(-(px // spacing) - 1, (px // spacing) + 2):
-        offset = k * spacing
-        pt1 = (offset,      0)
-        pt2 = (offset + px, px)
-        cv2.line(placeholder, pt1, pt2, hatch_color, 1, cv2.LINE_AA)
-        
-    cv2.rectangle(placeholder, (0, 0), (px - 1, px - 1), 150, 2)
-    
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    label = "NO DATA"
-    font_scale = px / 640.0
-    thickness = max(1, int(font_scale * 1.5))
-    (tw, th), _ = cv2.getTextSize(label, font, font_scale, thickness)
-    tx = (px - tw) // 2
-    ty = (px + th) // 2
-    cv2.putText(placeholder, label, (tx, ty),
-                font, font_scale, 120, thickness, cv2.LINE_AA)
-
-    # --- 2. Build index -----------------------------------------------------
-    idx_to_img: Dict[int, np.ndarray] = {}
-    for cand in candidate_data:
-        img = cand.get("image")
-        if img is not None:
-            for (col, row), cand_idx in cell_map.items():
-                if candidate_data[cand_idx]["position"] == cand["position"]:
-                    idx_to_img[cand_idx] = img
-                    break
-
-    # --- 3. Assemble rows (Ensuring everything is 2D) -----------------------
-    row_strips = []
-    for row in range(n_rows - 1, -1, -1):
-        tiles_in_row = []
-        for col in range(n_cols):
-            cand_idx = cell_map.get((col, row))
-            
-            if cand_idx is not None and cand_idx in idx_to_img:
-                tile_img = idx_to_img[cand_idx].copy()
-                
-                # Resize if necessary
-                if tile_img.shape[:2] != (px, px):
-                    tile_img = cv2.resize(tile_img, (px, px))
-                
-                # CRITICAL: Convert color tile (3D) to grayscale (2D)
-                # to match the placeholder dimension
-                if len(tile_img.shape) == 3:
-                    tile_img = cv2.cvtColor(tile_img, cv2.COLOR_BGR2GRAY)
-                
-                tiles_in_row.append(tile_img)
-            else:
-                # Add the 2D placeholder
-                tiles_in_row.append(placeholder.copy())
-        
-        # Every element in tiles_in_row is now 2D
-        row_strips.append(np.hstack(tiles_in_row))
-
-    # All row_strips are now 2D, vstack will succeed
-    collage = np.vstack(row_strips)
-
-    path = os.path.join(output_dir, "range_map_collage.png")
-    cv2.imwrite(path, collage)
-    print(f"[VIZ] Saved grayscale range map collage ({n_cols}×{n_rows} tiles): {path}")
-    return collage
-
-
-def create_satellite_overlay(
-    launch_lat: float, launch_lon: float,
-    target_lat: float, target_lon: float,
-    launch_image: np.ndarray,
-    target_image: np.ndarray,
-    candidate_data: List[Dict],
-    tile_w_m: float, tile_h_m: float,
-    r_min: float, r_max: float,
-    n_cols: int, n_rows: int,
-    cell_map: Dict,
-    tile_px: int,
-    output_dir: str,
-):
-    """
-    Overlay the stitched satellite range-map onto the search-zone diagram.
-
-    Each tile image is rendered at its exact geographic position and size in
-    metre-space, replacing the coloured rectangle fill from search_visualization
-    while keeping all annotation layers (ring circles, borders, markers, legend)
-    on top.
-
-    Saves to: search_visualization_satellite_overlay.png
-    """
-    target_x, target_y = latlon_to_meters(target_lat, target_lon,
-                                          launch_lat, launch_lon)
-
-    fig, ax = plt.subplots(figsize=(14, 10))
-    ax.set_facecolor("#0d1117")
-    fig.patch.set_facecolor("#0d1117")
-
-    # --- place each tile as an image at its geographic footprint -------------
-    # Build a reverse lookup: candidate position -> image
-    pos_to_img: Dict[Tuple, np.ndarray] = {
-        tuple(c["position"]): c["image"]
-        for c in candidate_data
-        if c.get("image") is not None
-    }
-    # Also need placeholder for cells in cell_map with no fetched image
-    placeholder_rgb = None
-
-    for (col, row), cand_idx in cell_map.items():
-        pos   = candidate_data[cand_idx]["position"]
-        img   = pos_to_img.get(tuple(pos))
-
-        cx, cy = latlon_to_meters(pos[0], pos[1], launch_lat, launch_lon)
-        left   = cx - tile_w_m / 2
-        bottom = cy - tile_h_m / 2
-
-        if img is not None:
-            rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            ax.imshow(
-                rgb,
-                extent=[left, left + tile_w_m, bottom, bottom + tile_h_m],
-                origin="upper",
-                aspect="auto",
-                zorder=3,
-                alpha=0.85,
-            )
-        else:
-            # hatched placeholder via a grey rectangle with cross-hatch pattern
-            if placeholder_rgb is None:
-                ph = np.full((tile_px, tile_px, 3), 200, dtype=np.uint8)
-                spacing = 32
-                for k in range(-(tile_px // spacing) - 1, (tile_px // spacing) + 2):
-                    offset = k * spacing
-                    cv2.line(ph, (offset, 0), (offset + tile_px, tile_px), (160, 160, 160), 1)
-                placeholder_rgb = ph
-            ax.imshow(
-                placeholder_rgb,
-                extent=[left, left + tile_w_m, bottom, bottom + tile_h_m],
-                origin="upper",
-                aspect="auto",
-                zorder=3,
-                alpha=0.60,
-            )
-
-    # --- tile borders with confidence colouring ------------------------------
-    for cand in candidate_data:
-        lat, lon = cand["position"]
-        cx, cy   = latlon_to_meters(lat, lon, launch_lat, launch_lon)
-        conf     = cand["confidence"]
-        color    = "#ffd700" if conf >= 0.60 else "#3a6fd8"
-        rect = patches.Rectangle(
-            (cx - tile_w_m / 2, cy - tile_h_m / 2),
-            tile_w_m, tile_h_m,
-            linewidth=1.4, edgecolor=color,
-            facecolor="none", zorder=5,
-        )
-        ax.add_patch(rect)
-        # small confidence label centred on each tile
-        ax.text(cx, cy, f"{conf:.0%}",
-                ha="center", va="center",
-                fontsize=max(5, int(7 * min(tile_w_m, 300) / 300)),
-                color=color, fontweight="bold", zorder=6,
-                bbox=dict(boxstyle="round,pad=0.15", facecolor="#0d1117",
-                          alpha=0.55, edgecolor="none"))
-
-    # --- best match highlight ------------------------------------------------
-    if candidate_data:
-        best = max(candidate_data, key=lambda c: c["confidence"])
-        bx, by = latlon_to_meters(best["position"][0], best["position"][1],
-                                  launch_lat, launch_lon)
-        rect_best = patches.Rectangle(
-            (bx - tile_w_m / 2, by - tile_h_m / 2),
-            tile_w_m, tile_h_m,
-            linewidth=3.0, edgecolor="#ff4444",
-            facecolor="none", zorder=7,
-        )
-        ax.add_patch(rect_best)
-        ax.plot(bx, by, "r^", markersize=11, label="Best match", zorder=8)
-
-    # --- reference ring circles ----------------------------------------------
-    for r in (r_min, r_max):
-        circle = plt.Circle((0, 0), r, color="#aaaacc",
-                             linestyle="--", fill=False, linewidth=1.0, zorder=9)
-        ax.add_patch(circle)
-
-    # --- launch + target markers ---------------------------------------------
-    ax.plot(0, 0, "go", markersize=14, label="Launch",  zorder=12)
-    ax.plot(target_x, target_y, "r*", markersize=18, label="Target", zorder=12)
-
-    def _overlay(img, pos, edge_color, zoom_f=0.13):
-        if img is None:
-            return
-        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        ib  = OffsetImage(rgb, zoom=zoom_f)
-        ab  = AnnotationBbox(ib, pos, frameon=True, boxcoords="data", pad=0.3,
-                             bboxprops=dict(edgecolor=edge_color, linewidth=2))
-        ax.add_artist(ab)
-
-    _overlay(launch_image, (0, 0), "green")
-    _overlay(target_image, (target_x, target_y), "red")
-
-    # --- labels & style ------------------------------------------------------
-    ax.set_xlabel("East–West Distance (m)",   fontsize=11, color="#cccccc")
-    ax.set_ylabel("North–South Distance (m)", fontsize=11, color="#cccccc")
-    ax.set_title("Sandwalk — Search Zone with Satellite Imagery",
-                 fontsize=13, fontweight="bold", color="white", pad=12)
-    ax.legend(fontsize=9, facecolor="#1a1a2e", labelcolor="white")
-    ax.grid(True, alpha=0.12, color="#444444")
-    ax.set_aspect("equal", "box")
-    ax.tick_params(colors="#888888")
-    for spine in ax.spines.values():
-        spine.set_edgecolor("#333333")
-
-    path = os.path.join(output_dir, "search_visualization_satellite_overlay.png")
-    plt.tight_layout()
-    plt.savefig(path, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
-    print(f"[VIZ] Saved: {path}")
-    plt.close()
-
-
-def create_search_visualization(
-    launch_lat: float, launch_lon: float,
-    target_lat: float, target_lon: float,
-    launch_image: np.ndarray,
-    target_image: np.ndarray,
-    drone_image:  np.ndarray,
-    candidate_data: List[Dict],
-    tile_w_m: float, tile_h_m: float,
-    r_min: float, r_max: float,
-    output_dir: str,
-):
-    """
-    Visualise the systematic tile grid over the search arc.
-    Tiles drawn as labelled rectangles; arc ring shown as dashed circles.
-    Two versions saved: without and with the drone reference image inset.
-    """
-    target_x, target_y = latlon_to_meters(target_lat, target_lon,
-                                          launch_lat, launch_lon)
-
-    def _build_figure():
-        fig, ax = plt.subplots(figsize=(14, 10))
-        ax.set_facecolor("#0d1117")
-        fig.patch.set_facecolor("#0d1117")
-
-        # reference ring circles
-        for r in (r_min, r_max):
-            circle = plt.Circle((0, 0), r, color="#4a4a6a",
-                                 linestyle="--", fill=False, linewidth=1.0, zorder=2)
-            ax.add_patch(circle)
-
-        # tile footprint rectangles
-        for cand in candidate_data:
-            lat, lon = cand["position"]
-            cx, cy   = latlon_to_meters(lat, lon, launch_lat, launch_lon)
-            conf     = cand["confidence"]
-            color    = "#ffd700" if conf >= 0.60 else "#3a6fd8"
-            rect = patches.Rectangle(
-                (cx - tile_w_m / 2, cy - tile_h_m / 2),
-                tile_w_m, tile_h_m,
-                linewidth=1.2, edgecolor=color,
-                facecolor=color, alpha=0.18, zorder=3,
-            )
-            ax.add_patch(rect)
-            ax.plot(cx, cy, "o", color=color, markersize=4, alpha=0.8, zorder=4)
-
-        # best match highlight
-        if candidate_data:
-            best = max(candidate_data, key=lambda c: c["confidence"])
-            bx, by = latlon_to_meters(best["position"][0], best["position"][1],
-                                      launch_lat, launch_lon)
-            rect_best = patches.Rectangle(
-                (bx - tile_w_m / 2, by - tile_h_m / 2),
-                tile_w_m, tile_h_m,
-                linewidth=2.5, edgecolor="#ff4444",
-                facecolor="#ff4444", alpha=0.30, zorder=6,
-            )
-            ax.add_patch(rect_best)
-            ax.plot(bx, by, "r^", markersize=10, label="Best match", zorder=7)
-
-        # launch + target markers
-        ax.plot(0, 0, "go", markersize=14, label="Launch",  zorder=10)
-        ax.plot(target_x, target_y, "r*", markersize=18, label="Target", zorder=10)
-
-        def _overlay(img, pos, edge_color, zoom_f=0.13):
-            if img is None:
-                return
-            rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            ib  = OffsetImage(rgb, zoom=zoom_f)
-            ab  = AnnotationBbox(ib, pos, frameon=True, boxcoords="data", pad=0.3,
-                                 bboxprops=dict(edgecolor=edge_color, linewidth=2))
-            ax.add_artist(ab)
-
-        _overlay(launch_image, (0, 0), "green")
-        _overlay(target_image, (target_x, target_y), "red")
-
-        ax.set_xlabel("East–West Distance (m)",   fontsize=11, color="#cccccc")
-        ax.set_ylabel("North–South Distance (m)", fontsize=11, color="#cccccc")
-        ax.legend(fontsize=9, facecolor="#1a1a2e", labelcolor="white")
-        ax.grid(True, alpha=0.15, color="#444444")
-        ax.set_aspect("equal", "box")
-        ax.tick_params(colors="#888888")
-        for spine in ax.spines.values():
-            spine.set_edgecolor("#333333")
-
-        return fig, ax, _overlay
-
-    # --- version 1: no drone inset ------------------------------------------
-    fig, ax, _overlay = _build_figure()
-    ax.set_title("Sandwalk — Systematic Tile Grid",
-                 fontsize=13, fontweight="bold", color="white", pad=12)
-    path1 = os.path.join(output_dir, "search_visualization.png")
-    plt.tight_layout()
-    plt.savefig(path1, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
-    print(f"[VIZ] Saved: {path1}")
-    plt.close()
-
-    # --- version 2: drone inset ---------------------------------------------
-    fig, ax, _overlay = _build_figure()
-    ax.set_title("Sandwalk — Systematic Tile Grid (with Drone Reference)",
-                 fontsize=13, fontweight="bold", color="white", pad=12)
-
-    if drone_image is not None:
-        # auto-detect empty corner (quadrant opposite the target)
-        xlim = ax.get_xlim()
-        ylim = ax.get_ylim()
-        cx_ = xlim[0] + (xlim[1] - xlim[0]) * (0.85 if target_x < 0 else 0.15)
-        cy_ = ylim[0] + (ylim[1] - ylim[0]) * (0.85 if target_y < 0 else 0.15)
-        _overlay(drone_image, (cx_, cy_), "mediumpurple", zoom_f=0.18)
-        ax.text(cx_, cy_ - (ylim[1] - ylim[0]) * 0.07,
-                "Drone View", ha="center", fontsize=9,
-                fontweight="bold", color="mediumpurple")
-
-    path2 = os.path.join(output_dir, "search_visualization_with_drone.png")
-    plt.tight_layout()
-    plt.savefig(path2, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
-    print(f"[VIZ] Saved: {path2}")
-    plt.close()
 
 
 # ---------------------------------------------------------------------------
@@ -849,8 +490,7 @@ def main():
     TARGET_LON  = 44.2261
 
     DISTANCE_TRAVELED_M = 500.0   # motor estimate (metres)
-    ALTITUDE_M          = 120.0   # drone AGL altitude (metres)
-                                  # replaces the old hardcoded ZOOM_LEVEL
+    ALTITUDE_M          = 2257.0  # AGL metres; with ALTITUDE_ZOOM_NUMERATOR_M -> zoom 18
     TOLERANCE_PERCENT   = 0.10    # ring half-width = ±10 % of distance
     TILE_PX             = 640     # pixel dimension of each tile
 
@@ -918,7 +558,6 @@ def main():
 
     idx_to_cell = {idx: (c, r) for (c, r), idx in cell_map.items()}
     tiles_bgr: Dict[Tuple[int, int], np.ndarray] = {}
-    candidate_data: List[Dict] = []
 
     for idx, (lat, lon) in enumerate(candidates):
         print(f"[TEST] Tile {idx + 1:>3}/{len(candidates)}: "
@@ -927,20 +566,11 @@ def main():
         tile = load_satellite_tile(lat, lon, zoom, GOOGLE_MAPS_API_KEY, TILE_PX)
         if tile is None:
             print("FAILED (tile load error)")
-            candidate_data.append({"position": (lat, lon), "image": None, "confidence": 0.35})
             continue
 
-        fname = f"tile_{idx + 1:03d}_lat{lat:.6f}_lon{lon:.6f}.jpg"
-        cv2.imwrite(os.path.join(output_dir, fname), tile)
-
         cell = idx_to_cell[idx]
-        tiles_bgr[cell] = tile
-        candidate_data.append({
-            "position": (lat, lon),
-            "image": tile,
-            "confidence": 0.35,
-        })
         print("ok")
+        tiles_bgr[cell] = tile
 
     # ===== STITCH MOSAIC + TEMPLATE MATCH ====================================
     print(f"\n[TEST] Building preprocessed mosaic and running template match…")
@@ -950,7 +580,7 @@ def main():
     mosaic = build_preprocessed_mosaic(TILE_PX, tiles_bgr, c0, c1, r0, r1)
     cv2.imwrite(os.path.join(output_dir, "03_mosaic_preprocessed.jpg"), mosaic)
 
-    tmpl_lat, tmpl_lon, tmpl_peak, tmpl_loc, tmpl_res = localize_template_on_mosaic(
+    tmpl_lat, tmpl_lon, tmpl_peak, tmpl_loc, _tmpl_res = localize_template_on_mosaic(
         mosaic,
         processed_drone,
         x_min_m, y_min_m,
@@ -959,58 +589,13 @@ def main():
         c0, r1,
     )
     th, tw = processed_drone.shape[:2]
-    cu = tmpl_loc[0] + 0.5 * tw
-    cv = tmpl_loc[1] + 0.5 * th
-    col_p = c0 + int(math.floor(cu / TILE_PX))
-    irow_p = int(math.floor(cv / TILE_PX))
-    peak_cell = (col_p, r1 - irow_p)
-    for idx in range(len(candidate_data)):
-        c, r = idx_to_cell[idx]
-        candidate_data[idx]["confidence"] = 0.95 if (c, r) == peak_cell else 0.35
 
     vis = cv2.cvtColor(mosaic, cv2.COLOR_GRAY2BGR)
     cv2.rectangle(vis, tmpl_loc, (tmpl_loc[0] + tw, tmpl_loc[1] + th), (0, 255, 0), 3)
     cv2.imwrite(os.path.join(output_dir, "04_mosaic_template_peak.jpg"), vis)
 
-    heat = cv2.normalize(tmpl_res, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    cv2.imwrite(os.path.join(output_dir, "05_match_template_heatmap.jpg"), heat)
     save_template_vs_mosaic_crop(output_dir, processed_drone, mosaic, tmpl_loc)
     print(f"[TEST] Template peak NCC = {tmpl_peak:.3f} at pixel offset {tmpl_loc}")
-
-    # ===== VISUALISATION =====================================================
-    print(f"\n[TEST] Creating tile-grid visualisations…")
-    create_search_visualization(
-        LAUNCH_LAT, LAUNCH_LON,
-        TARGET_LAT, TARGET_LON,
-        launch_image, target_image, drone_frame,
-        candidate_data,
-        tile_w_m, tile_h_m,
-        r_min, r_max,
-        output_dir,
-    )
-
-    print(f"[TEST] Creating range map collage…")
-    create_range_map_collage(
-        candidate_data,
-        n_cols, n_rows,
-        cell_map,
-        TILE_PX,
-        output_dir,
-    )
-
-    print(f"[TEST] Creating satellite overlay…")
-    create_satellite_overlay(
-        LAUNCH_LAT, LAUNCH_LON,
-        TARGET_LAT, TARGET_LON,
-        launch_image, target_image,
-        candidate_data,
-        tile_w_m, tile_h_m,
-        r_min, r_max,
-        n_cols, n_rows,
-        cell_map,
-        TILE_PX,
-        output_dir,
-    )
 
     # ===== RESULTS ===========================================================
     print("\n" + "=" * 60)
