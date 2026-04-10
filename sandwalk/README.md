@@ -18,13 +18,13 @@ Dead reckoning fails because errors compound exponentially—a 1% drift in veloc
 Sandwalk is an onboard, vision-based absolute positioning system that enables drones to determine their global coordinates in GPS-denied environments using only: (1) known launch location, (2) motor usage telemetry (rough distance traveled), and (3) live camera imagery. Unlike Glasses, which validates arrival at a pre-specified target, Sandwalk continuously localizes the drone anywhere along its flight path by matching observed terrain against satellite imagery within a dynamically constrained search region.
 
 **How it works:**
-1. **Launch + Dead Reckoning = Search Region**: Given launch coordinates and estimated distance traveled (from motor usage), Sandwalk calculates a circular search region with radius = estimated_distance ± tolerance_margin
-2. **Optional Target Constraint**: If target coordinates are provided, Sandwalk eliminates geometrically implausible regions (e.g., areas opposite the target vector), reducing the search space by 50-75%
-3. **Tile-Based Matching**: Sandwalk retrieves satellite imagery tiles covering the search region and performs SIFT-based feature matching between live drone footage and each candidate tile
-4. **Position Output**: The tile with highest matching confidence becomes the drone's estimated position, output as latitude/longitude coordinates
+1. **Launch + dead reckoning + target bearing → search zone**: With target lat/lon, Sandwalk builds a **half-annulus** in the horizontal plane: radial band = estimated distance ± tolerance, angular span = 180° centered on bearing toward the target (not a full disk).
+2. **Systematic tile sourcing**: Barometric altitude maps to a **Static Maps zoom** and tile ground footprint. The zone’s axis-aligned bounds are **snapped outward** to full tiles; **only grid cells that intersect the zone polygon** are requested; they are **stitched into one north-up mosaic** (empty cells are never matched).
+3. **Template matching (single pass)**: The drone frame is **preprocessed** to a fixed template size; **`cv2.matchTemplate` (normalized cross-correlation)** is run **once over the full mosaic**. The **global NCC peak** fixes the template footprint on the map; **no per-tile SIFT** or best-of-tiles vote.
+4. **Position output**: **Sub-tile** lat/lon from the peak (template center), plus match score as confidence.
 
 **Key Innovation**: Sandwalk transforms unbounded dead-reckoning drift into a bounded search problem. By periodically re-localizing against satellite imagery (every ~3 seconds), position uncertainty never exceeds the search radius tolerance, enabling sustained GPS-denied navigation over extended missions.
 
-**Operational Security**: All processing occurs onboard. No position data, imagery, or telemetry is transmitted. The drone carries satellite imagery tiles pre-loaded for its operational area, making it resilient to communication jamming and undetectable through RF emissions analysis.
+**Operational Security**: Matching runs **onboard** on the drone frame and the mosaic. **Tiles** are pulled as needed for the current search box (e.g. Google Static Maps or an equivalent cached tile set for the area)—no vision needs to leave the vehicle for the correlation step.
 
 Sandwalk replaces fragile dead-reckoning navigation with robust vision-based localization, giving autonomous drones the ability to answer "where am I?" without GPS, without transmitting data, and without requiring pre-mapped 3D environments.
