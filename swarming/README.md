@@ -9,3 +9,21 @@ Say you have a lot of drones at point A that all need to get to point B. Rather 
 This allows for really cool movements, such as: A swarm of drones executing a mission while a kinetic counter-UAS interceptor is deployed. The swarm smoothly and fully autonomously carves out space in its "volume" to let the deterrent slip through without doing any damage, all while remaining a continuous, smooth, amorphous body and rejoining once the threat is out of range.
 
 To some extent, I'm still trying to figure out where this fits in a modern industrial setting. One thing that's clear is that this is not an exploratory technology. Fundamentally, these bird swarms have a bias toward cohesion and sticking with the group. Deploying this approach in search-and-rescue, disaster relief, or large-scale inspection settings creates a lot of friction with that core methodology. Instead, one potentially more interesting application of this could be air highways: the aerial analogues of underwater currents, designed for the efficient movement of goods from warehouse to location. But I think there is more to be done in bringing this concept into physical reality.
+
+---
+
+### Sim
+
+2D Boids with topological perception (each agent only reacts to its k nearest neighbors — not the whole flock), A→B goal seeking, and obstacle flow. There is no global planner: the volume is just local steering (separation, alignment, cohesion, goal, obstacle). Arrow-dots show heading; the flock ferries between two waypoints and deforms around circles.
+
+```bash
+cd swarming
+pip install -r requirements.txt
+python src/main.py
+```
+
+- **click** — set destination
+- **T** — send a threat through the flock (carve / rejoin)
+- **R** — reset
+- **SPACE** — pause
+- **ESC** — quit
