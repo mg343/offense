@@ -14,9 +14,11 @@ separation_radius = 22  # personal space so they don't collapse
 max_speed = 4.4  # px/frame at 60fps, readable glide
 min_speed = 2.2  # stop them stalling into a clump
 max_force = 0.55  # turn radius v^2/a has to fit inside obstacle_pad or they plow through
-weight_separation, weight_alignment, weight_cohesion = 1.75, 1.05, 0.95  # sep heaviest so they don't stack
-weight_goal, weight_obstacle, weight_threat, weight_wall = 0.42, 2.4, 3.1, 1.8  # avoid > goal so they deform not tunnel
-obstacle_pad = 55  # start steering before they hit the circle
+weight_separation, weight_alignment, weight_cohesion = 1.75, 1.05, 0.95  # group hold is working, leave it
+weight_goal, weight_obstacle, weight_threat, weight_wall = 0.22, 5.0, 5.0, 1.8  # hit = fail; obs out of the shared cap
+obstacle_pad = 70  # start dodge sooner so seek can't line them into a circle
+noise_std = 0.01  # 0.04 was snapping extrema headings
+heading_keep = 0.6  # blend prior heading; extrema were flipping every frame
 arrive_radius = 70  # close enough to count as reaching the goal
 wall_margin = 48  # keep the flock off the window edge
 threat_radius = 28  # big enough to split the volume. threat_radius = np.random.uniform(18, 40)
@@ -103,6 +105,7 @@ while running:
         np.fill_diagonal(dist_sq, 1e18)
         nearest = np.argpartition(dist_sq, neighbor_count, axis=1)[:, :neighbor_count]
         acceleration = np.zeros_like(positions)
+        dodge_acc = np.zeros_like(positions)
         see2, sep2 = perception_radius ** 2, separation_radius ** 2
 
         #local boid forces
@@ -128,11 +131,15 @@ while running:
             if n_vis:
                 force += weight_alignment * steer(alignment / n_vis, velocity)
                 force += weight_cohesion * steer(cohesion / n_vis - position, velocity)
-            force += weight_goal * steer(goal - position, velocity)
+            #dodge is death-priority: own budget, and no seek while in the pad
+            dodge = np.zeros(2)
             for obst_x, obst_y, obst_r in obstacles:
-                force += weight_obstacle * avoid(position, velocity, obst_x, obst_y, obst_r)
+                dodge += weight_obstacle * avoid(position, velocity, obst_x, obst_y, obst_r)
             if threat is not None:
-                force += weight_threat * avoid(position, velocity, threat[0], threat[1], threat_radius)
+                dodge += weight_threat * avoid(position, velocity, threat[0], threat[1], threat_radius)
+            if np.linalg.norm(dodge) < 1e-6:
+                force += weight_goal * steer(goal - position, velocity)
+            dodge_acc[i] = dodge
             #push off window edges
             if position[0] < wall_margin:
                 force[0] += weight_wall * (wall_margin - position[0]) / wall_margin
@@ -142,11 +149,12 @@ while running:
                 force[1] += weight_wall * (wall_margin - position[1]) / wall_margin
             elif position[1] > screen_height - wall_margin:
                 force[1] -= weight_wall * (position[1] - (screen_height - wall_margin)) / wall_margin
-            acceleration[i] = force + np.random.randn(2) * 0.04
+            acceleration[i] = force + np.random.randn(2) * noise_std
 
         #integrate
-        acceleration = cap(acceleration, max_force)
-        velocities = cap(velocities + acceleration, max_speed)
+        acceleration = cap(acceleration, max_force) + cap(dodge_acc, max_force)
+        new_vel = cap(velocities + acceleration, max_speed)
+        velocities = cap(heading_keep * velocities + (1.0 - heading_keep) * new_vel, max_speed)
         speed = np.linalg.norm(velocities, axis=1, keepdims=True)
         velocities = np.where(speed < min_speed, velocities * min_speed / (speed + 1e-8), velocities)
         positions = positions + velocities
