@@ -3,20 +3,24 @@ import math
 import random
 import pygame
 
-WIDTH, HEIGHT = 800, 600
+WIDTH, HEIGHT = 1280, 800
 NUM_BIRDS = 150
 obstacle_radius = 50
 
 class Bird:
+
     cohesion = 0.005
-    bird_seperation = 0.7 #personal space is logically high
+    bird_seperation = 0.7  # personal space is logically high
     bird_seperation_radius = 25.0
     obstacle_seperation_tolerance = 1  # hitting an object is worse than crowding a neighbor
     obstacle_seperation_radius = 5 * bird_seperation_radius  # flinch much earlier than bird-bird space
     alignment = 0.05
     view = 200.0
     max_speed = 4.0
-    heading_keep = 0.7 #less work to keep current heading
+    heading_keep = 0.7  # less work to keep current heading
+    seek = 1  # strength of steering toward target
+    seek_arrive = 0.25 * bird_seperation_radius  # would rather err on keeping the swarm close to the target than letting it get distracted
+    target = (random.uniform(80, WIDTH - 80), random.uniform(80, HEIGHT - 80))  # loft each bird already knows
 
     def __init__(self, x, y):
         self.x = x
@@ -32,7 +36,7 @@ class Bird:
                 continue
             if math.hypot(other.x - self.x, other.y - self.y) < self.view:
                 nearby.append(other)
-        #surface in view, not the center
+
         seen_obstacles = []
         for ox, oy in obstacles:
             if math.hypot(self.x - ox, self.y - oy) - obstacle_radius < self.view:
@@ -55,13 +59,24 @@ class Bird:
             if 0 < dist < self.bird_seperation_radius:
                 self.vx += dx / dist * self.bird_seperation
                 self.vy += dy / dist * self.bird_seperation
-        #same flinch, personal space measured off the bark
+
         for ox, oy in seen_obstacles:
             dx, dy = self.x - ox, self.y - oy
             dist = math.hypot(dx, dy) or 1e-6
             if dist - obstacle_radius < self.obstacle_seperation_radius:
                 self.vx += dx / dist * self.obstacle_seperation_tolerance
                 self.vy += dy / dist * self.obstacle_seperation_tolerance
+
+    def seek_update(self, seen_obstacles):
+        if seen_obstacles:
+            return
+        dx = self.target[0] - self.x
+        dy = self.target[1] - self.y
+        dist = math.hypot(dx, dy)
+        if dist < self.seek_arrive:
+            return
+        self.vx += dx / dist * self.seek
+        self.vy += dy / dist * self.seek
 
     def alignment_update(self, nearby):
         if not nearby:
@@ -77,6 +92,7 @@ class Bird:
         self.cohesion_update(nearby)
         self.seperation_update(nearby, seen_obstacles)
         self.alignment_update(nearby)
+        self.seek_update(seen_obstacles)
         speed = math.hypot(self.vx, self.vy)
         if speed > self.max_speed:
             self.vx = self.vx / speed * self.max_speed
@@ -120,7 +136,8 @@ for i in range(NUM_BIRDS):
     y = center_y + radius * math.sin(angle)
     birds.append(Bird(x, y))
 
-obstacles = []  # click to place (x, y)
+obstacles = []  # left click to place (x, y)
+# right click to reposition target
 
 running = True
 while running:
@@ -129,7 +146,10 @@ while running:
         if event.type == pygame.QUIT:
             running = False
         elif event.type == pygame.MOUSEBUTTONDOWN:
-            obstacles.append(event.pos)
+            if event.button == 1:
+                obstacles.append(event.pos)
+            elif event.button == 3:
+                Bird.target = event.pos
 
     # loop
     for bird in birds:
@@ -140,6 +160,7 @@ while running:
     for ox, oy in obstacles:
         pygame.draw.circle(screen, (22, 28, 42), (int(ox), int(oy)), obstacle_radius)
         pygame.draw.circle(screen, (58, 72, 98), (int(ox), int(oy)), obstacle_radius, 2)
+    pygame.draw.circle(screen, (232, 176, 72), (int(Bird.target[0]), int(Bird.target[1])), 8, 2)
     for bird in birds:
         heading = math.atan2(bird.vy, bird.vx)
         tip = (bird.x + math.cos(heading) * 8, bird.y + math.sin(heading) * 8)
