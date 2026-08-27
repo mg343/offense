@@ -1,6 +1,6 @@
 # offense
 
-A suite of solutions to tackle interesting problems in the usage of autonomous drones in defense operations.
+A suite of solutions to tackle interesting problems in the operation of autonomous drones.
 
 ### [Sandwalk](https://github.com/mg343/offense/tree/main/sandwalk)
 Global Localization via Satellite Imagery Matching under Bounded Dead-Reckoning Search.
