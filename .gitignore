@@ -1,10 +1,10 @@
 /__testing__/
 /glasses/src/files/
 /sandwalk/src/files/
-/bloop/src/files/
-/darts/src/files/
+/一bloop/src/files/
+/一darts/src/files/
 /precisionlanding/src/files/
-/copperdome/src/files/
+/一copperdome/src/files/
 /swarming/src/files/
 .*
 !/.gitignore
