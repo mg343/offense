@@ -12,18 +12,19 @@ To some extent, I'm still trying to figure out where this fits in a modern indus
 
 ---
 
-### Sim
+### 2D Boids Simulation
 
-2D Boids with topological perception (each agent only reacts to its k nearest neighbors — not the whole flock), A→B goal seeking, and obstacle flow. There is no global planner: the volume is just local steering (separation, alignment, cohesion, goal, obstacle). Arrow-dots show heading; the flock ferries between two waypoints and deforms around circles.
+A simple flocking model: each bird only pays attention to objects (birds, obstacles) in it's view, steering toward group cohesion, alignment, separation, a target point, and avoiding obstacles. No central control, each bird acts completely independantly.
+
+To run:
 
 ```bash
-cd swarming
 pip install -r requirements.txt
-python src/main.py
+python src/sim_with_obstacles_target.py
 ```
 
-- **click** — set destination
-- **T** — send a threat through the flock (carve / rejoin)
-- **R** — reset
-- **SPACE** — pause
-- **ESC** — quit
+Controls:
+- **Left Click** – set obstacle position
+- **Right Click** – set target position
+
+Future Work: This approach uses the classic Boids rule set of cohesion, separation, and alignment for robust, mathematically clean, reproducible flocking behavior. In the future, this can be extended by replacing or augmenting these rules with a reinforcement learning reward system for more complex or adaptive group strategies. I'm interested in seeing if a more refined policy (Boids or RL) might be able to allow for things like the kinetic UAS avoidance mechanism mentioned earlier - this would be a much further step pairing real-time computer vision pipelines instead of our oversimplified "see" function calls, which sounds like a fun challenge.
