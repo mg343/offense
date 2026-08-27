@@ -9,19 +9,23 @@ num_boids = 150  # dense enough to read as a flock. num_boids = np.random.randin
 screen_width = 1280  # common laptop window
 screen_height = 800  # 16:10-ish with 1280
 neighbor_count = 7  # birds only track ~6-7 neighbors
-perception_radius = 90  # local view, not the whole flock
-separation_radius = 22  # personal space so they don't collapse
+separation_radius = 22  # body-length unit for the other radii
+perception_radius = 5.0 * separation_radius  # k-NN cutoff; 5 body so tiny splinters can still see out
 max_speed = 4.4  # px/frame at 60fps, readable glide
 min_speed = 2.2  # stop them stalling into a clump
-max_force = 0.55  # turn radius v^2/a has to fit inside obstacle_pad or they plow through
-weight_separation, weight_alignment, weight_cohesion = 1.75, 1.05, 0.95  # group hold is working, leave it
+max_force = 0.55  # turn radius v^2/a has to fit in the dodge pad
+weight_separation, weight_alignment = 1.75, 1.05
+weight_cohesion = 0.7 * weight_separation  # coh/sep ratio, not a one-off
+weight_flock = 0.2 * weight_separation  # weak pull to flock mean; k-NN can't reel a splinter of ≥8
 weight_goal, weight_obstacle, weight_threat, weight_wall = 0.22, 5.0, 5.0, 1.8  # hit = fail; obs out of the shared cap
-obstacle_pad = 70  # start dodge sooner so seek can't line them into a circle
+pad_over_radius = 1.0  # dodge pad / obstacle radius (same still or moving)
+dodge_lookahead = 18  # extra pad = this many frames of closing speed (time-to-collision)
 noise_std = 0.01  # 0.04 was snapping extrema headings
 heading_keep = 0.6  # blend prior heading; extrema were flipping every frame
 arrive_radius = 70  # close enough to count as reaching the goal
 wall_margin = 48  # keep the flock off the window edge
-threat_radius = 28  # big enough to split the volume. threat_radius = np.random.uniform(18, 40)
+threat_radius = 1.25 * separation_radius  # ~body-scaled;  threat_radius = np.random.uniform(18, 40)
+threat_speed = max_speed  # v_obst/vmax = 1 so T is in the same regime as the flock
 
 obstacles = [(520, 270, 68), (710, 530, 82), (900, 310, 52)]  # staggered so they split/squeeze. obstacles = [(np.random.uniform(300, screen_width-300), np.random.uniform(150, screen_height-150), np.random.uniform(40, 90)) for _ in range(3)]
 start = np.array([140.0, screen_height / 2])  # left-side spawn. start = np.array([np.random.uniform(80, 220), np.random.uniform(120, screen_height-120)])
@@ -50,14 +54,15 @@ def cap(vecs, limit):
     return vecs * np.where(mag > limit, limit / (mag + 1e-8), 1.0)
 
 
-#repel + slide around a circle
-def avoid(position, velocity, cx, cy, radius, pad=obstacle_pad):
+#repel + slide around a circle. pad = (pad/r)*r + lookahead*closing — same still or moving
+def avoid(position, velocity, cx, cy, radius, obst_vx=0.0, obst_vy=0.0):
     away = np.array([position[0] - cx, position[1] - cy])
     dist = np.hypot(away[0], away[1]) + 1e-8
-    infl = radius + pad
+    normal = away / dist
+    closing = max(0.0, -float(np.dot(velocity - np.array([obst_vx, obst_vy]), normal)))
+    infl = radius + pad_over_radius * radius + dodge_lookahead * closing
     if dist >= infl:
         return np.zeros(2)
-    normal = away / dist
     falloff = ((infl - dist) / infl) ** 2
     tangent = np.array([-normal[1], normal[0]])
     if np.dot(velocity, tangent) < 0:
@@ -95,7 +100,7 @@ while running:
             elif event.key == pygame.K_r:
                 reset()
             elif event.key == pygame.K_t:
-                threat = [-40.0, float(np.random.uniform(180, screen_height - 180)), 6.8, 0.0]
+                threat = [-40.0, float(np.random.uniform(180, screen_height - 180)), threat_speed, 0.0]
         elif event.type == pygame.MOUSEBUTTONDOWN:
             goal = np.array(event.pos, dtype=float)
 
@@ -107,6 +112,7 @@ while running:
         acceleration = np.zeros_like(positions)
         dodge_acc = np.zeros_like(positions)
         see2, sep2 = perception_radius ** 2, separation_radius ** 2
+        flock_center = positions.mean(0)
 
         #local boid forces
         for i in range(num_boids):
@@ -131,12 +137,13 @@ while running:
             if n_vis:
                 force += weight_alignment * steer(alignment / n_vis, velocity)
                 force += weight_cohesion * steer(cohesion / n_vis - position, velocity)
+            force += weight_flock * steer(flock_center - position, velocity)
             #dodge is death-priority: own budget, and no seek while in the pad
             dodge = np.zeros(2)
             for obst_x, obst_y, obst_r in obstacles:
                 dodge += weight_obstacle * avoid(position, velocity, obst_x, obst_y, obst_r)
             if threat is not None:
-                dodge += weight_threat * avoid(position, velocity, threat[0], threat[1], threat_radius)
+                dodge += weight_threat * avoid(position, velocity, threat[0], threat[1], threat_radius, threat[2], threat[3])
             if np.linalg.norm(dodge) < 1e-6:
                 force += weight_goal * steer(goal - position, velocity)
             dodge_acc[i] = dodge
@@ -179,7 +186,7 @@ while running:
         pygame.draw.circle(screen, (58, 72, 98), (int(obst_x), int(obst_y)), int(obst_r), 2)
     pygame.draw.circle(screen, (232, 176, 72), (int(goal[0]), int(goal[1])), 8, 2)
     if threat is not None:
-        pygame.draw.circle(screen, (220, 72, 72), (int(threat[0]), int(threat[1])), threat_radius, 2)
+        pygame.draw.circle(screen, (220, 72, 72), (int(threat[0]), int(threat[1])), int(threat_radius), 2)
     for i in range(num_boids):
         heading = math.atan2(velocities[i, 1], velocities[i, 0])
         x, y = positions[i]
