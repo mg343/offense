@@ -36,7 +36,7 @@ def integrate(pos, vel):
 # ===== hardcoded sample LEO-ish pass ========================================
 PLATFORM_LAT, PLATFORM_LON, PLATFORM_ALT = 0.0, 0.0, 400_000.0   # equator, 400km
 PLATFORM_VEL = [0.0, 7660.0, 0.0]   # ~LEO eastward, m/s
-DV_KICK = [0.0, 0.0, -200.0]        # shove "down" / southish, m/s — stand-in for launch accel
+DV_KICK = [0.0, -3200.0, 0.0]       # fat retrograde kick so periapsis bites the dirt
 
 pos = latlon_alt_to_ecef(PLATFORM_LAT, PLATFORM_LON, PLATFORM_ALT)
 vel = [PLATFORM_VEL[i] + DV_KICK[i] for i in range(3)]
