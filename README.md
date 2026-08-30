@@ -15,7 +15,7 @@ Vision-based Helicopter Precision Landing System.
 Target Validation via Visual Environmental Prior Matching.
 
 ### [Drift](https://github.com/mg343/offense/tree/main/drift)
-Feature-Track Ground Velocity Estimation for GPS-Denied Dead Reckoning.
+Terrain-Based Visual Velocity Estimation via Monocular Feature Tracking.
 
 ### [Darts (In Progress...)](https://github.com/mg343/offense/tree/main/一darts)
 Ballistic Launch Solver for Targeting Earth from Moving Space Platforms.
