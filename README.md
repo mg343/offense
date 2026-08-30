@@ -14,7 +14,7 @@ Vision-based Helicopter Precision Landing System.
 ### [Glasses](https://github.com/mg343/offense/tree/main/glasses)
 Target Validation via Visual Environmental Prior Matching.
 
-### [Drift](https://github.com/mg343/offense/tree/main/drift)
+### [Drift](https://github.com/mg343/offense/tree/cursor-sandbox/drift)
 Terrain-Based Visual Velocity Estimation via Monocular Feature Tracking.
 
 ### [Darts (In Progress...)](https://github.com/mg343/offense/tree/main/一darts)
