@@ -14,6 +14,9 @@ Vision-based Helicopter Precision Landing System.
 ### [Glasses](https://github.com/mg343/offense/tree/main/glasses)
 Target Validation via Visual Environmental Prior Matching.
 
+### [Drift](https://github.com/mg343/offense/tree/main/drift)
+Nadir Feature-Track Ground Velocity Estimation for GPS-Denied Dead Reckoning.
+
 ### [Darts (In Progress...)](https://github.com/mg343/offense/tree/main/一darts)
 Ballistic Launch Solver for Targeting Earth from Moving Space Platforms.
 
