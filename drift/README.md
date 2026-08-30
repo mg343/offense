@@ -1,6 +1,8 @@
 # Drift
 
-Monocular ground-velocity estimation from nadir drone footage when GPS is unavailable or untrusted. Tracks statistically salient **color** patches frame-to-frame and converts pixel motion to metres per second using known altitude and camera field of view.
+Terrain-Based Visual Velocity Estimation via Monocular Feature Tracking.
+
+Tracks statistically salient **color** patches frame-to-frame and converts pixel motion to metres per second using known altitude and camera field of view.
 
 ---
 
