@@ -1,0 +1,5 @@
+opencv-python==4.13.0.92
+numpy==2.0.2
+matplotlib==3.9.4
+Pillow==11.3.0
+imageio==2.37.0

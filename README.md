@@ -14,11 +14,11 @@ Vision-based Helicopter Precision Landing System.
 ### [Glasses](https://github.com/mg343/offense/tree/main/glasses)
 Target Validation via Visual Environmental Prior Matching.
 
+### [Drift](https://github.com/mg343/offense/tree/main/drift)
+Terrain-Based Visual Velocity Estimation via Monocular Feature Tracking.
+
 ### [Darts (In Progress...)](https://github.com/mg343/offense/tree/main/一darts)
-Ballistic Launch Solver for Targeting Earth from Moving Space Platforms.
 
 ### [Copper Dome (In Progress...)](https://github.com/mg343/offense/tree/main/一copperdome)
-Point‑Defense System for Intercepting "Missiles" Using "Ballistic Countermeasures".
 
 ### [Bloop (In Progress...)](https://github.com/mg343/offense/tree/main/一bloop)
-Monocular Altitude Estimation Against Onboard Terrain Elevation Maps.
